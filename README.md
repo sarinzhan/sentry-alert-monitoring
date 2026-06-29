@@ -39,9 +39,32 @@ Put it behind your reverse proxy / TLS as usual.
 | `SENTRY_CLIENT_SECRET` | recommended | Internal Integration Client Secret; verifies the request. Empty = check off |
 | `HOST` / `PORT` | no | default `0.0.0.0` / `8080` |
 | `DB_PATH` | no | default `state.db` |
+| `TELEGRAM_CA_BUNDLE` | no | PEM CA bundle to trust for `api.telegram.org` (see TLS below) |
+| `TELEGRAM_SSL_INSECURE` | no | `true` skips TLS verification (last resort); default `false` |
 
 Getting `TELEGRAM_CHAT_ID`: add the bot to the chat, send any message, then open
 `https://api.telegram.org/bot<TOKEN>/getUpdates` and read the `chat.id`.
+
+## TLS behind a corporate proxy
+
+If the box reaches `api.telegram.org` through an intercepting HTTPS proxy (common on
+corporate networks — httpx picks the proxy up from `HTTPS_PROXY`/`https_proxy`), startup
+can fail with:
+
+```
+[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Authority Key Identifier
+```
+
+The proxy presents a certificate signed by an internal CA, and modern OpenSSL rejects it.
+The bot builds its own SSL context to handle this:
+
+- it trusts the system/certifi store **plus** `TELEGRAM_CA_BUNDLE` if set — point that at
+  the corporate CA (PEM) so the proxy cert verifies, and
+- it relaxes the strict X.509 check that flags a CA cert with no Authority Key Identifier
+  (the cause of the error above).
+
+Preferred fix: `TELEGRAM_CA_BUNDLE=/etc/ssl/certs/corporate-ca.pem`. As a last resort when
+you can't obtain a clean CA cert, set `TELEGRAM_SSL_INSECURE=true` to skip verification.
 
 ## Wire up Sentry
 
@@ -57,6 +80,10 @@ subscribe to one of:
 
 The script handles both shapes automatically — pick based on whether you want stack
 frames in the message.
+
+Every `POST /webhook` call is logged on arrival (`/webhook called: resource=... bytes=...
+from=...`), with a warning on a rejected signature or unparseable body — handy for
+confirming Sentry is actually reaching the listener.
 
 ## How the debounce works
 
