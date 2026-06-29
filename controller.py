@@ -63,17 +63,21 @@ async def telegram_webhook(request: Request):
 @app.post("/webhook")
 async def webhook(request: Request):
     body = await request.body()
+    resource = request.headers.get("sentry-hook-resource", "")
+    log.info("/webhook called: resource=%s bytes=%d from=%s",
+             resource or "?", len(body), request.client.host if request.client else "?")
+
     sentry = request.app.state.sentry
     if not sentry.verify(body, request.headers.get("sentry-hook-signature")):
-        log.warning("bad signature")
+        log.warning("/webhook bad signature (resource=%s)", resource or "?")
         return Response(status_code=401)
 
     try:
         payload = await request.json()
     except Exception:
+        log.warning("/webhook bad json (resource=%s)", resource or "?")
         return Response(status_code=400)
 
-    resource = request.headers.get("sentry-hook-resource", "")
     # respond right away; do Telegram/LLM work in the background
     asyncio.create_task(sentry.process(resource, payload))
     return Response(status_code=200)

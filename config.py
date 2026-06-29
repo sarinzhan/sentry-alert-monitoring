@@ -24,6 +24,14 @@ DB_PATH       = os.environ.get("DB_PATH", "state.db")
 HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", "8080"))
 
+# TLS for the Telegram API. On corporate networks the bot reaches api.telegram.org
+# through an intercepting HTTPS proxy whose internal CA must be trusted. Point this
+# at the corporate CA bundle (PEM). Leave empty to use the system/certifi trust store.
+TELEGRAM_CA_BUNDLE = os.environ.get("TELEGRAM_CA_BUNDLE", "")
+# Last resort: skip certificate verification entirely (insecure). Only meaningful when
+# you're already behind a trusted MITM proxy and can't obtain a clean CA cert.
+TELEGRAM_SSL_INSECURE = os.environ.get("TELEGRAM_SSL_INSECURE", "false").lower() == "true"
+
 # Long-poll Telegram for incoming commands (/start) instead of needing a public
 # webhook. Handy for local use. Leave off in production if you use setWebhook,
 # since getUpdates and a webhook can't both be active (Telegram returns 409).

@@ -6,19 +6,49 @@ Responsibilities:
   - handle the /start command (reply with chat id + topic id)
   - send outgoing messages (used by the Sentry path too)
 """
+import ssl
+
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.request import HTTPXRequest
 
-from config import CHAT_ID, log
+from config import CHAT_ID, TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE, log
 from utils import esc
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """
+    SSL context for talking to api.telegram.org, tolerant of corporate MITM proxies.
+
+    - trusts the system/certifi store, plus an optional corporate CA bundle
+    - clears VERIFY_X509_STRICT so a CA cert missing the Authority Key Identifier
+      extension (common with internal CAs) doesn't fail verification on modern OpenSSL
+    - optionally drops verification entirely as a last resort
+    """
+    ctx = ssl.create_default_context()
+    if TELEGRAM_CA_BUNDLE:
+        ctx.load_verify_locations(TELEGRAM_CA_BUNDLE)
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    if TELEGRAM_SSL_INSECURE:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 class ChatBotHandler:
     def __init__(self, token: str, default_chat_id=CHAT_ID):
         self._default_chat_id = default_chat_id
-        self.app = Application.builder().token(token).build()
+        ctx = _build_ssl_context()
+        self.app = (
+            Application.builder()
+            .token(token)
+            # one request object for normal API calls, one for long-polling getUpdates
+            .request(HTTPXRequest(httpx_kwargs={"verify": ctx}))
+            .get_updates_request(HTTPXRequest(httpx_kwargs={"verify": ctx}))
+            .build()
+        )
         self.app.add_handler(CommandHandler("start", self.on_start))
 
     @property
