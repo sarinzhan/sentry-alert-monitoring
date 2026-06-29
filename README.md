@@ -68,17 +68,42 @@ SEND_WINDOWS = [60, 300]   # gap before 2nd send, then before every later send
 ```
 
 So per issue: now, then ≥60s later, then ≥300s apart. Anything in between is dropped.
-Change the list at the top of `app.py` to retune. The key is the Sentry issue id, so each
+Change `SEND_WINDOWS` in `config.py` to retune. The key is the Sentry issue id, so each
 issue is throttled independently.
 
-## Run as a service (optional)
+## Run as a service (systemd)
 
 ```bash
-sudo mkdir -p /opt/sentry-telegram && sudo cp *.py .env /opt/sentry-telegram/
-cd /opt/sentry-telegram && python3 -m venv venv && ./venv/bin/pip install -r /path/to/requirements.txt
+# 1. copy the project and config into place
+sudo mkdir -p /opt/sentry-telegram
+sudo cp *.py requirements.txt .env /opt/sentry-telegram/
+
+# 2. create a venv and install deps
+cd /opt/sentry-telegram
+sudo python3 -m venv venv
+sudo ./venv/bin/pip install -r requirements.txt
+
+# 3. create an unprivileged user and hand it the directory
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentry-telegram
+sudo chown -R sentry-telegram:sentry-telegram /opt/sentry-telegram
+
+# 4. install and start the unit
 sudo cp sentry-telegram.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable --now sentry-telegram
 ```
+
+Check it:
+
+```bash
+systemctl status sentry-telegram
+journalctl -u sentry-telegram -f      # follow logs
+```
+
+The unit (`sentry-telegram.service`) runs `venv/bin/python main.py` from
+`/opt/sentry-telegram`, restarts on failure, and is locked down (non-root,
+`ProtectSystem=strict`); `state.db` stays writable via `ReadWritePaths`.
+If you change paths or the username, edit the unit to match.
 
 ## Future: LLM cause + fix
 
