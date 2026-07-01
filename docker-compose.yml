@@ -13,6 +13,11 @@ services:
       TELEGRAM_BOT_TOKEN: "8961493849:AAGduVKIaQOToo2LPont4zdmK-ats3hDgBQ"
       TELEGRAM_CHAT_ID: "-1003221319576:8"
       SENTRY_CLIENT_SECRET: "3c9ecec4dfdee101edf20f0f096b80753408dd6cef075c6f84113feb3e34150d"
+
+      HTTP_PROXY: "http://10.16.195.94:8080"
+      HTTPS_PROXY: "http://10.16.195.94:8080"
+      http_proxy: "http://10.16.195.94:8080"
+      https_proxy: "http://10.16.195.94:8080"
     volumes:
       # persist the debounce db across restarts (DB_PATH=data/state.db -> /app/data)
       - sentry_telegram_state:/app/data
