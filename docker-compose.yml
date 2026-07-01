@@ -32,8 +32,11 @@ services:
       # persist the debounce db across restarts (DB_PATH=data/state.db -> /app/data)
       - sentry_telegram_state:/app/data
     networks:
-      # reachable from the Sentry stack as http://sentry-telegram:8080
-      - sentry-self-hosted_default
+      # reachable from the Sentry stack as http://sentry-telegram:8080, plus a
+      # dotted alias because Sentry's webhook URL validator rejects single-label hosts
+      sentry-self-hosted_default:
+        aliases:
+          - sentry-telegram.local
 
 volumes:
   sentry_telegram_state:
