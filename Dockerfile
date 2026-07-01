@@ -7,9 +7,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# install deps first (better layer caching)
+# install deps first (better layer caching).
+# The corporate proxy intercepts TLS with a self-signed CA, so pip can't verify
+# pypi.org's cert — trust those hosts explicitly (mirrors TELEGRAM_SSL_INSECURE).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+        --trusted-host pypi.org \
+        --trusted-host files.pythonhosted.org \
+        --trusted-host pypi.python.org \
+        -r requirements.txt
 
 # then the app (all modules live in the project root)
 COPY *.py ./
