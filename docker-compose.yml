@@ -1,0 +1,28 @@
+services:
+  sentry-telegram:
+    build: /opt/docker/sentry-alert-monitoring
+    container_name: sentry-telegram
+    restart: unless-stopped
+    environment:
+      DB_PATH: "data/state.db"
+      ENABLE_LLM: "false"
+      ANTHROPIC_API_KEY: "-"
+      ANTHROPIC_MODEL: "-"
+      TELEGRAM_SSL_INSECURE: "true"
+      TELEGRAM_CA_BUNDLE: "-"
+      TELEGRAM_BOT_TOKEN: "8961493849:AAGduVKIaQOToo2LPont4zdmK-ats3hDgBQ"
+      TELEGRAM_CHAT_ID: "-1003221319576:8"
+      SENTRY_CLIENT_SECRET: "3c9ecec4dfdee101edf20f0f096b80753408dd6cef075c6f84113feb3e34150d"
+    volumes:
+      # persist the debounce db across restarts (DB_PATH=data/state.db -> /app/data)
+      - sentry_telegram_state:/app/data
+    networks:
+      # reachable from the Sentry stack as http://sentry-telegram:8080
+      - sentry-self-hosted_default
+
+volumes:
+  sentry_telegram_state:
+
+networks:
+  sentry-self-hosted_default:
+    external: true

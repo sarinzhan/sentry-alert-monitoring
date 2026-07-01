@@ -18,7 +18,16 @@ _load_dotenv()
 
 # --- core ---
 BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID       = os.environ.get("TELEGRAM_CHAT_ID")
+# TELEGRAM_CHAT_ID may be a bare chat id ("-100123...") or "chatid:thread" to post
+# into a specific forum topic ("-100123...:8"). Split it into chat + default thread.
+_raw_chat     = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
+CHAT_ID       = _raw_chat or None
+CHAT_THREAD_ID = None
+if _raw_chat and ":" in _raw_chat:
+    _cid, _, _tid = _raw_chat.partition(":")
+    CHAT_ID = _cid.strip() or None
+    _tid = _tid.strip()
+    CHAT_THREAD_ID = int(_tid) if _tid.lstrip("-").isdigit() else None
 CLIENT_SECRET = os.environ.get("SENTRY_CLIENT_SECRET")        # empty -> signature check off
 DB_PATH       = os.environ.get("DB_PATH", "state.db")
 HOST          = os.environ.get("HOST", "0.0.0.0")
@@ -27,7 +36,9 @@ PORT          = int(os.environ.get("PORT", "8080"))
 # TLS for the Telegram API. On corporate networks the bot reaches api.telegram.org
 # through an intercepting HTTPS proxy whose internal CA must be trusted. Point this
 # at the corporate CA bundle (PEM). Leave empty to use the system/certifi trust store.
-TELEGRAM_CA_BUNDLE = os.environ.get("TELEGRAM_CA_BUNDLE", "")
+TELEGRAM_CA_BUNDLE = os.environ.get("TELEGRAM_CA_BUNDLE", "").strip()
+if TELEGRAM_CA_BUNDLE == "-":          # placeholder for "not set"
+    TELEGRAM_CA_BUNDLE = ""
 # Last resort: skip certificate verification entirely (insecure). Only meaningful when
 # you're already behind a trusted MITM proxy and can't obtain a clean CA cert.
 TELEGRAM_SSL_INSECURE = os.environ.get("TELEGRAM_SSL_INSECURE", "false").lower() == "true"

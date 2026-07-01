@@ -1,0 +1,28 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets & local config (pass via -e / --env-file at run time)
+.env
+
+# Runtime state (SQLite debounce db)
+state.db
+*.db
+*.db-journal
+*.db-wal
+
+# VCS / editor / OS cruft
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# Docs and unit file aren't needed in the image
+README.md
+sentry-telegram.service

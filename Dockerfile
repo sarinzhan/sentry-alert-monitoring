@@ -14,8 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # then the app (all modules live in the project root)
 COPY *.py ./
 
-# run unprivileged; /app must stay writable for the SQLite debounce db (state.db)
+# run unprivileged; /app/data holds the SQLite debounce db and must be writable
+# (a named volume mounted here inherits this ownership on first creation)
 RUN useradd --system --no-create-home appuser \
+    && mkdir -p /app/data \
     && chown -R appuser:appuser /app
 USER appuser
 
