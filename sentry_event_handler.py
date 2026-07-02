@@ -68,6 +68,21 @@ class SentryEventHandler:
         self._lock = asyncio.Lock()
         self._last_spike: dict[str, float] = {}   # issue_id -> last spike-alert time
 
+        # project id -> name cache (error webhooks only carry the numeric id)
+        self._proj_cache: dict[str, str] = {}
+        self._proj_fetched = 0.0
+        self._proj_lock = asyncio.Lock()
+        # dedicated client: trust_env=False so it ignores HTTP(S)_PROXY and talks
+        # to Sentry directly on the docker network.
+        self._api = None
+        if SENTRY_API_TOKEN:
+            self._api = httpx.AsyncClient(
+                base_url=SENTRY_API_URL,
+                trust_env=False,
+                timeout=10,
+                headers={"Authorization": f"Bearer {SENTRY_API_TOKEN}"},
+            )
+
     # ------------------------------------------------------------- counting
     def record_and_count(self, issue_id: str):
         """Record one occurrence; return (total_24h, count_in_window) for this issue."""
@@ -93,21 +108,6 @@ class SentryEventHandler:
             return False
         self._last_spike[issue_id] = now
         return True
-
-        # project id -> name cache (error webhooks only carry the numeric id)
-        self._proj_cache: dict[str, str] = {}
-        self._proj_fetched = 0.0
-        self._proj_lock = asyncio.Lock()
-        # dedicated client: trust_env=False so it ignores HTTP(S)_PROXY and talks
-        # to Sentry directly on the docker network.
-        self._api = None
-        if SENTRY_API_TOKEN:
-            self._api = httpx.AsyncClient(
-                base_url=SENTRY_API_URL,
-                trust_env=False,
-                timeout=10,
-                headers={"Authorization": f"Bearer {SENTRY_API_TOKEN}"},
-            )
 
     async def aclose(self):
         if self._api is not None:
