@@ -70,7 +70,7 @@ SEND_WINDOWS = [60, 300]
 # seconds, send an alert even if the debounce would otherwise suppress it. To avoid
 # repeats, at most one spike alert per issue per SPIKE_COOLDOWN seconds.
 # SPIKE_THRESHOLD=0 disables the rule.
-SPIKE_THRESHOLD = int(os.environ.get("SPIKE_THRESHOLD", "0"))
+SPIKE_THRESHOLD = int(os.environ.get("SPIKE_THRESHOLD", "5"))
 SPIKE_WINDOW    = int(os.environ.get("SPIKE_WINDOW", "300"))
 SPIKE_COOLDOWN  = int(os.environ.get("SPIKE_COOLDOWN", str(SPIKE_WINDOW)))
 
