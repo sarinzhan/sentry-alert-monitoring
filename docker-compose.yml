@@ -13,23 +13,9 @@ services:
       - "8080:8080"
     container_name: sentry-telegram
     restart: unless-stopped
-    environment:
-      DB_PATH: "data/state.db"
-      ENABLE_LLM: "false"
-      ANTHROPIC_API_KEY: "-"
-      ANTHROPIC_MODEL: "-"
-      TELEGRAM_SSL_INSECURE: "true"
-      TELEGRAM_CA_BUNDLE: "-"
-      # Secrets come from a .env file next to this compose (gitignored) — never hardcode.
-      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
-      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:?set TELEGRAM_CHAT_ID in .env}"
-      SENTRY_CLIENT_SECRET: "${SENTRY_CLIENT_SECRET:?set SENTRY_CLIENT_SECRET in .env}"
-      SENTRY_API_TOKEN: "${SENTRY_API_TOKEN:-}"
-
-      HTTP_PROXY: "http://10.16.195.94:8080"
-      HTTPS_PROXY: "http://10.16.195.94:8080"
-      http_proxy: "http://10.16.195.94:8080"
-      https_proxy: "http://10.16.195.94:8080"
+    # all config + secrets come from .env next to this compose (gitignored)
+    env_file:
+      - .env
     volumes:
       # persist the debounce db across restarts (DB_PATH=data/state.db -> /app/data)
       - sentry_telegram_state:/app/data
