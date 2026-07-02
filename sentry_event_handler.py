@@ -392,8 +392,9 @@ class SentryEventHandler:
                 log.info("debounced issue=%s (total=%s window=%s)",
                          p["issue_id"], p["total"], p["last5m"])
                 return
-            # a spike send that the debounce would otherwise have suppressed
-            p["spike"] = spike and not normal
+            # show the spike banner whenever the issue is over threshold at send time,
+            # no matter which trigger (window or threshold) produced this send
+            p["spike"] = bool(SPIKE_THRESHOLD) and p["last5m"] >= SPIKE_THRESHOLD
             # numeric project id -> name (None falls back to "sentry" in the header)
             p["project"] = await self.resolve_project(p.get("project"))
             analysis = await self.analyze(p)              # None today
