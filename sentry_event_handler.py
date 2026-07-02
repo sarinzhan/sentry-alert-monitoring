@@ -18,11 +18,13 @@ import sqlite3
 import httpx
 
 from config import (
-    CLIENT_SECRET, DB_PATH, SEND_WINDOWS,
-    SPIKE_THRESHOLD, SPIKE_WINDOW, SPIKE_COOLDOWN,
+    CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, LOG_RAW_PAYLOAD,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, log,
 )
+
+# status -> emoji for the message header
+STATUS_EMOJI = {"new": "🆕", "ongoing": "🔁", "escalating": "🚨"}
 from utils import esc
 
 
@@ -66,7 +68,6 @@ class SentryEventHandler:
         )
         self._db.commit()
         self._lock = asyncio.Lock()
-        self._last_spike: dict[str, float] = {}   # issue_id -> last spike-alert time
 
         # project id -> name cache (error webhooks only carry the numeric id)
         self._proj_cache: dict[str, str] = {}
@@ -83,31 +84,68 @@ class SentryEventHandler:
                 headers={"Authorization": f"Bearer {SENTRY_API_TOKEN}"},
             )
 
-    # ------------------------------------------------------------- counting
-    def record_and_count(self, issue_id: str):
-        """Record one occurrence; return (total_24h, count_in_window) for this issue."""
-        now = time.time()
-        self._db.execute("INSERT INTO event_log (issue_id, ts) VALUES (?, ?)", (issue_id, now))
-        self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - 86400,))  # prune >24h
-        self._db.commit()
-        total = self._db.execute(
-            "SELECT COUNT(*) FROM event_log WHERE issue_id = ?", (issue_id,)
-        ).fetchone()[0]
-        window = self._db.execute(
-            "SELECT COUNT(*) FROM event_log WHERE issue_id = ? AND ts >= ?",
-            (issue_id, now - SPIKE_WINDOW),
-        ).fetchone()[0]
-        return total, window
+    # -------------------------------------------------- counting + send decision
+    async def register_and_decide(self, issue_id: str, title: str):
+        """
+        Record this occurrence, then decide whether to send and with what status.
+        Returns (send: bool, status: str|None, c24h, c30m, c5m). Under a lock so
+        concurrent webhooks for the same issue can't race the counts/state.
 
-    def spike_triggered(self, issue_id: str, window_count: int) -> bool:
-        """True if this issue crossed the rate threshold and isn't in spike cooldown."""
-        if not SPIKE_THRESHOLD or window_count < SPIKE_THRESHOLD:
-            return False
+        status:
+          new         first message ever for this issue
+          escalating  >= SPIKE_THRESHOLD events since our last message for it
+          ongoing     a normal debounce-window send
+        """
         now = time.time()
-        if now - self._last_spike.get(issue_id, 0.0) < SPIKE_COOLDOWN:
-            return False
-        self._last_spike[issue_id] = now
-        return True
+        async with self._lock:
+            self._db.execute("INSERT INTO event_log (issue_id, ts) VALUES (?, ?)", (issue_id, now))
+            self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - 86400,))  # prune >24h
+
+            def count(since=None):
+                if since is None:
+                    return self._db.execute(
+                        "SELECT COUNT(*) FROM event_log WHERE issue_id=?", (issue_id,)
+                    ).fetchone()[0]
+                return self._db.execute(
+                    "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, since)
+                ).fetchone()[0]
+
+            c24, c30, c5 = count(), count(now - 1800), count(now - 300)
+
+            row = self._db.execute(
+                "SELECT last_sent, step FROM issue_state WHERE issue_id=?", (issue_id,)
+            ).fetchone()
+
+            if row is None:                                   # first time we see this issue
+                self._db.execute(
+                    "INSERT INTO issue_state(issue_id, last_sent, step, title, updated) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (issue_id, now, 1, title, now),
+                )
+                self._db.commit()
+                return True, "new", c24, c30, c5
+
+            last_sent, step = row
+            # events since our last message for this issue -> escalation signal
+            since_last = self._db.execute(
+                "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>?", (issue_id, last_sent)
+            ).fetchone()[0]
+            escalating = bool(SPIKE_THRESHOLD) and since_last >= SPIKE_THRESHOLD
+
+            gap_needed = self._windows[min(step - 1, len(self._windows) - 1)]
+            window_ok = (now - last_sent) >= gap_needed
+
+            if not (window_ok or escalating):
+                self._db.commit()                             # persist the event_log insert/prune
+                return False, None, c24, c30, c5
+
+            # a send resets the baseline, so escalation needs another THRESHOLD events
+            self._db.execute(
+                "UPDATE issue_state SET last_sent=?, step=?, title=?, updated=? WHERE issue_id=?",
+                (now, step + 1, title, now, issue_id),
+            )
+            self._db.commit()
+            return True, ("escalating" if escalating else "ongoing"), c24, c30, c5
 
     async def aclose(self):
         if self._api is not None:
@@ -164,41 +202,6 @@ class SentryEventHandler:
                 sig, expected, len(CLIENT_SECRET), CLIENT_SECRET[:4], CLIENT_SECRET[-4:], len(body),
             )
         return ok
-
-    # ------------------------------------------------------------- debounce
-    async def should_send(self, issue_id: str, title: str) -> bool:
-        """
-        Decide whether to send for this issue right now, and record the decision.
-        Runs under a lock so two webhooks for the same issue can't both pass.
-        """
-        now = time.time()
-        async with self._lock:
-            row = self._db.execute(
-                "SELECT last_sent, step FROM issue_state WHERE issue_id = ?",
-                (issue_id,),
-            ).fetchone()
-
-            if row is None:                               # first time we see this issue
-                self._db.execute(
-                    "INSERT INTO issue_state(issue_id, last_sent, step, title, updated) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (issue_id, now, 1, title, now),
-                )
-                self._db.commit()
-                return True
-
-            last_sent, step = row
-            gap_needed = self._windows[min(step - 1, len(self._windows) - 1)]
-            if now - last_sent < gap_needed:              # still inside window -> skip
-                return False
-
-            self._db.execute(
-                "UPDATE issue_state SET last_sent=?, step=?, title=?, updated=? "
-                "WHERE issue_id=?",
-                (now, step + 1, title, now, issue_id),
-            )
-            self._db.commit()
-            return True
 
     # ------------------------------------------------------------- parsing
     @staticmethod
@@ -273,13 +276,20 @@ class SentryEventHandler:
     # ------------------------------------------------------------- format
     @staticmethod
     def build_message(p: dict, analysis: str = None) -> str:
-        emoji = LEVEL_EMOJI.get((p.get("level") or "").lower(), "🔴")
+        status = p.get("status") or "ongoing"
+        emoji = STATUS_EMOJI.get(status, "🔴")
         project = esc(p.get("project") or "sentry")
-        if p.get("spike"):
-            mins = max(1, SPIKE_WINDOW // 60)
-            lines = [f"🚨 <b>SPIKE · {project}</b> — {esc(p.get('last5m'))} errors in {mins} min", ""]
-        else:
-            lines = [f"{emoji} <b>Sentry · {project}</b>", ""]
+        env = esc(p.get("environment") or "?")
+
+        # line 1: <emoji> project · env · status
+        lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
+        # line 2: #<last6 of event uuid> · 24h/30m/5m
+        short = (p.get("event_id") or "?")[-6:]
+        lines.append(
+            f"<code>#{esc(short)}</code> · "
+            f"{esc(p.get('c24h', 0))}/{esc(p.get('c30m', 0))}/{esc(p.get('c5m', 0))} (24h/30m/5m)"
+        )
+        lines.append("")
 
         lines.append(f"<b>{esc(p.get('title'))}</b>")
         if p.get("value") and p.get("value") != p.get("title"):
@@ -290,19 +300,11 @@ class SentryEventHandler:
             lines.append(f"<b>Culprit:</b> <code>{esc(p['culprit'])}</code>")
 
         meta = []
-        if p.get("level"):       meta.append(f"level {esc(p['level'])}")
-        if p.get("environment"): meta.append(f"env {esc(p['environment'])}")
-        if p.get("count"):       meta.append(f"events {esc(p['count'])}")
-        if p.get("user_count"):  meta.append(f"users {esc(p['user_count'])}")
+        if p.get("level"):      meta.append(f"level {esc(p['level'])}")
+        if p.get("count"):      meta.append(f"events {esc(p['count'])}")
+        if p.get("user_count"): meta.append(f"users {esc(p['user_count'])}")
         if meta:
             lines.append(" · ".join(meta))
-
-        # occurrences observed by this notifier (error webhooks carry no aggregate)
-        if p.get("total") is not None:
-            lines.append(f"<b>Occurrences:</b> {esc(p['total'])} total · {esc(p['last5m'])} in last 5 min")
-
-        if p.get("event_id"):
-            lines.append(f"<b>Event:</b> <code>{esc(p['event_id'])}</code>")
 
         if p.get("frames"):
             lines.append("<pre>" + "\n".join(esc(f) for f in p["frames"]) + "</pre>")
@@ -384,22 +386,19 @@ class SentryEventHandler:
             if p.get("action") not in NOTIFY_ACTIONS:
                 log.info("ignored action=%s issue=%s", p.get("action"), p["issue_id"])
                 return
-            # count every occurrence (incl. debounced ones) before the send decision
-            p["total"], p["last5m"] = self.record_and_count(p["issue_id"])
-            normal = await self.should_send(p["issue_id"], p.get("title") or "")
-            spike = self.spike_triggered(p["issue_id"], p["last5m"])
-            if not (normal or spike):
-                log.info("debounced issue=%s (total=%s window=%s)",
-                         p["issue_id"], p["total"], p["last5m"])
+            # record the occurrence, get counts, and decide send + status atomically
+            send, status, p["c24h"], p["c30m"], p["c5m"] = \
+                await self.register_and_decide(p["issue_id"], p.get("title") or "")
+            if not send:
+                log.info("debounced issue=%s (24h/30m/5m=%s/%s/%s)",
+                         p["issue_id"], p["c24h"], p["c30m"], p["c5m"])
                 return
-            # show the spike banner whenever the issue is over threshold at send time,
-            # no matter which trigger (window or threshold) produced this send
-            p["spike"] = bool(SPIKE_THRESHOLD) and p["last5m"] >= SPIKE_THRESHOLD
+            p["status"] = status
             # numeric project id -> name (None falls back to "sentry" in the header)
             p["project"] = await self.resolve_project(p.get("project"))
             analysis = await self.analyze(p)              # None today
             await self._send(self.build_message(p, analysis))
-            log.info("sent issue=%s%s (total=%s window=%s)",
-                     p["issue_id"], " SPIKE" if p.get("spike") else "", p["total"], p["last5m"])
+            log.info("sent issue=%s status=%s (24h/30m/5m=%s/%s/%s)",
+                     p["issue_id"], status, p["c24h"], p["c30m"], p["c5m"])
         except Exception as e:
             log.exception("process failed: %s", e)
