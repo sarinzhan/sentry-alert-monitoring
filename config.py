@@ -28,7 +28,7 @@ if _raw_chat and ":" in _raw_chat:
     CHAT_ID = _cid.strip() or None
     _tid = _tid.strip()
     CHAT_THREAD_ID = int(_tid) if _tid.lstrip("-").isdigit() else None
-CLIENT_SECRET = os.environ.get("SENTRY_CLIENT_SECRET")        # empty -> signature check off
+CLIENT_SECRET = (os.environ.get("SENTRY_CLIENT_SECRET") or "").strip() or None  # empty -> signature check off
 DB_PATH       = os.environ.get("DB_PATH", "state.db")
 HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", "8080"))
