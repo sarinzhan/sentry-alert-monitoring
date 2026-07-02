@@ -20,7 +20,7 @@ import httpx
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, LOG_RAW_PAYLOAD,
-    SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, log,
+    SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES, log,
 )
 
 # status -> emoji for the message header
@@ -153,18 +153,20 @@ class SentryEventHandler:
 
     # ---------------------------------------------------------- project names
     async def resolve_project(self, project):
-        """Map a numeric project id to its name/slug. Returns a name, or None."""
+        """Map a project id to a name. Order: static map -> API -> raw id fallback."""
         if project is None:
             return None
         s = str(project)
         if not s.isdigit():
             return s                       # already a slug/name (issue payloads)
-        if self._api is None:
-            return None                    # lookup disabled -> caller falls back
-        if s in self._proj_cache:
-            return self._proj_cache[s]
-        await self._refresh_projects()
-        return self._proj_cache.get(s)
+        if s in PROJECT_NAMES:             # static override, no network needed
+            return PROJECT_NAMES[s]
+        if self._api is not None:
+            if s not in self._proj_cache:
+                await self._refresh_projects()
+            if s in self._proj_cache:
+                return self._proj_cache[s]
+        return s                           # fallback: show the numeric id (mappable)
 
     async def _refresh_projects(self):
         async with self._proj_lock:
@@ -181,6 +183,10 @@ class SentryEventHandler:
                 for proj in r.json():
                     self._proj_cache[str(proj["id"])] = proj.get("slug") or proj.get("name")
                 log.info("project cache refreshed: %d projects", len(self._proj_cache))
+            except httpx.HTTPStatusError as e:
+                # surface the real reason (e.g. 403 = token missing project:read)
+                log.warning("project name fetch failed: %s %s",
+                            e.response.status_code, e.response.text[:200])
             except Exception as e:
                 log.warning("project name fetch failed: %s", e)
 

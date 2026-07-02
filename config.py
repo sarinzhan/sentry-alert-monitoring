@@ -42,6 +42,15 @@ SENTRY_API_TOKEN = os.environ.get("SENTRY_API_TOKEN", "").strip()
 if SENTRY_API_TOKEN == "-":            # placeholder for "not set"
     SENTRY_API_TOKEN = ""
 
+# Optional static project id -> name map for the header, e.g. "3:billing,4:payments".
+# Checked before the API lookup; the reliable option when you can't use an API token.
+PROJECT_NAMES = {}
+for _pair in os.environ.get("PROJECT_NAMES", "").split(","):
+    if ":" in _pair:
+        _k, _v = _pair.split(":", 1)
+        if _k.strip() and _v.strip():
+            PROJECT_NAMES[_k.strip()] = _v.strip()
+
 # TLS for the Telegram API. On corporate networks the bot reaches api.telegram.org
 # through an intercepting HTTPS proxy whose internal CA must be trusted. Point this
 # at the corporate CA bundle (PEM). Leave empty to use the system/certifi trust store.
