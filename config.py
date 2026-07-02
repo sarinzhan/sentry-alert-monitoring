@@ -66,6 +66,14 @@ LOG_RAW_PAYLOAD = os.environ.get("LOG_RAW_PAYLOAD", "true").lower() == "true"
 # The last value repeats forever. [60, 300] = "now, then >=1m, then every 5m".
 SEND_WINDOWS = [60, 300]
 
+# Rate-spike rule: if an issue fires >= SPIKE_THRESHOLD times within SPIKE_WINDOW
+# seconds, send an alert even if the debounce would otherwise suppress it. To avoid
+# repeats, at most one spike alert per issue per SPIKE_COOLDOWN seconds.
+# SPIKE_THRESHOLD=0 disables the rule.
+SPIKE_THRESHOLD = int(os.environ.get("SPIKE_THRESHOLD", "0"))
+SPIKE_WINDOW    = int(os.environ.get("SPIKE_WINDOW", "300"))
+SPIKE_COOLDOWN  = int(os.environ.get("SPIKE_COOLDOWN", str(SPIKE_WINDOW)))
+
 # Future feature: ask an LLM for likely cause + fix. Off by default.
 ENABLE_LLM        = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")

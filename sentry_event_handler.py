@@ -19,6 +19,7 @@ import httpx
 
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS,
+    SPIKE_THRESHOLD, SPIKE_WINDOW, SPIKE_COOLDOWN,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, LOG_RAW_PAYLOAD,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, log,
 )
@@ -55,8 +56,43 @@ class SentryEventHandler:
             )
             """
         )
+        # one row per received event, so we can count occurrences per issue
+        # (total + last 5 min). Pruned to the last 24h to stay bounded.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS event_log (issue_id TEXT NOT NULL, ts REAL NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS ix_event_log ON event_log (issue_id, ts)"
+        )
         self._db.commit()
         self._lock = asyncio.Lock()
+        self._last_spike: dict[str, float] = {}   # issue_id -> last spike-alert time
+
+    # ------------------------------------------------------------- counting
+    def record_and_count(self, issue_id: str):
+        """Record one occurrence; return (total_24h, count_in_window) for this issue."""
+        now = time.time()
+        self._db.execute("INSERT INTO event_log (issue_id, ts) VALUES (?, ?)", (issue_id, now))
+        self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - 86400,))  # prune >24h
+        self._db.commit()
+        total = self._db.execute(
+            "SELECT COUNT(*) FROM event_log WHERE issue_id = ?", (issue_id,)
+        ).fetchone()[0]
+        window = self._db.execute(
+            "SELECT COUNT(*) FROM event_log WHERE issue_id = ? AND ts >= ?",
+            (issue_id, now - SPIKE_WINDOW),
+        ).fetchone()[0]
+        return total, window
+
+    def spike_triggered(self, issue_id: str, window_count: int) -> bool:
+        """True if this issue crossed the rate threshold and isn't in spike cooldown."""
+        if not SPIKE_THRESHOLD or window_count < SPIKE_THRESHOLD:
+            return False
+        now = time.time()
+        if now - self._last_spike.get(issue_id, 0.0) < SPIKE_COOLDOWN:
+            return False
+        self._last_spike[issue_id] = now
+        return True
 
         # project id -> name cache (error webhooks only carry the numeric id)
         self._proj_cache: dict[str, str] = {}
@@ -219,6 +255,7 @@ class SentryEventHandler:
 
         return {
             "issue_id": issue_id,
+            "event_id": _first(obj.get("event_id"), obj.get("eventID")),
             "action": action,
             "title": obj.get("title") or exc_type or "Sentry event",
             "culprit": obj.get("culprit"),
@@ -237,7 +274,12 @@ class SentryEventHandler:
     @staticmethod
     def build_message(p: dict, analysis: str = None) -> str:
         emoji = LEVEL_EMOJI.get((p.get("level") or "").lower(), "🔴")
-        lines = [f"{emoji} <b>Sentry · {esc(p.get('project') or 'sentry')}</b>", ""]
+        project = esc(p.get("project") or "sentry")
+        if p.get("spike"):
+            mins = max(1, SPIKE_WINDOW // 60)
+            lines = [f"🚨 <b>SPIKE · {project}</b> — {esc(p.get('last5m'))} errors in {mins} min", ""]
+        else:
+            lines = [f"{emoji} <b>Sentry · {project}</b>", ""]
 
         lines.append(f"<b>{esc(p.get('title'))}</b>")
         if p.get("value") and p.get("value") != p.get("title"):
@@ -254,6 +296,13 @@ class SentryEventHandler:
         if p.get("user_count"):  meta.append(f"users {esc(p['user_count'])}")
         if meta:
             lines.append(" · ".join(meta))
+
+        # occurrences observed by this notifier (error webhooks carry no aggregate)
+        if p.get("total") is not None:
+            lines.append(f"<b>Occurrences:</b> {esc(p['total'])} total · {esc(p['last5m'])} in last 5 min")
+
+        if p.get("event_id"):
+            lines.append(f"<b>Event:</b> <code>{esc(p['event_id'])}</code>")
 
         if p.get("frames"):
             lines.append("<pre>" + "\n".join(esc(f) for f in p["frames"]) + "</pre>")
@@ -335,13 +384,21 @@ class SentryEventHandler:
             if p.get("action") not in NOTIFY_ACTIONS:
                 log.info("ignored action=%s issue=%s", p.get("action"), p["issue_id"])
                 return
-            if not await self.should_send(p["issue_id"], p.get("title") or ""):
-                log.info("debounced issue=%s", p["issue_id"])
+            # count every occurrence (incl. debounced ones) before the send decision
+            p["total"], p["last5m"] = self.record_and_count(p["issue_id"])
+            normal = await self.should_send(p["issue_id"], p.get("title") or "")
+            spike = self.spike_triggered(p["issue_id"], p["last5m"])
+            if not (normal or spike):
+                log.info("debounced issue=%s (total=%s window=%s)",
+                         p["issue_id"], p["total"], p["last5m"])
                 return
+            # a spike send that the debounce would otherwise have suppressed
+            p["spike"] = spike and not normal
             # numeric project id -> name (None falls back to "sentry" in the header)
             p["project"] = await self.resolve_project(p.get("project"))
             analysis = await self.analyze(p)              # None today
             await self._send(self.build_message(p, analysis))
-            log.info("sent issue=%s", p["issue_id"])
+            log.info("sent issue=%s%s (total=%s window=%s)",
+                     p["issue_id"], " SPIKE" if p.get("spike") else "", p["total"], p["last5m"])
         except Exception as e:
             log.exception("process failed: %s", e)
