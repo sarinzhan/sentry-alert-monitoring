@@ -112,6 +112,14 @@ ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
 # Stack sent to the LLM: keep the full in-app (project) trace, but at most this many
 # library frames (framework noise). All-lib crashes still show the top few for context.
 LLM_STACK_LIB_MAX = int(os.environ.get("LLM_STACK_LIB_MAX", "5"))
+# TLS for the external Anthropic call. api.anthropic.com goes through the corporate
+# proxy, which MITMs the cert — same problem as Telegram. Defaults to the Telegram
+# posture; point ANTHROPIC_CA_BUNDLE at the corporate CA to verify instead of skip.
+ANTHROPIC_SSL_INSECURE = os.environ.get(
+    "ANTHROPIC_SSL_INSECURE", str(TELEGRAM_SSL_INSECURE)).lower() == "true"
+ANTHROPIC_CA_BUNDLE = os.environ.get("ANTHROPIC_CA_BUNDLE", "").strip()
+if ANTHROPIC_CA_BUNDLE == "-":
+    ANTHROPIC_CA_BUNDLE = ""
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -145,6 +153,7 @@ def banner():
         f"  debounce windows  {SEND_WINDOWS}  spike_threshold={SPIKE_THRESHOLD}",
         f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
         f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
+        f"  llm tls           insecure={ANTHROPIC_SSL_INSECURE} ca={ANTHROPIC_CA_BUNDLE or '-'}",
         f"  llm stack         lib_max={LLM_STACK_LIB_MAX}",
         f"  gitlab            url={GITLAB_URL or '-'} ref={GITLAB_REF} "
         f"token={_mask(GITLAB_TOKEN)} ctx_lines={GITLAB_CONTEXT_LINES}",

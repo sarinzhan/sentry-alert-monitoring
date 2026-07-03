@@ -8,6 +8,7 @@ Responsibilities:
   - format the Telegram message (+ optional LLM cause/fix)
   - send via an injected sender (ChatBotHandler.send)
 """
+import ssl
 import time
 import json
 import hmac
@@ -21,6 +22,7 @@ import httpx
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
+    ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE,
     LLM_STACK_LIB_MAX, LOG_RAW_PAYLOAD, LOG_LLM_PROMPT,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
     GITLAB_URL, GITLAB_TOKEN, GITLAB_REF, GITLAB_CONTEXT_LINES, GITLAB_PROJECTS, log,
@@ -97,6 +99,18 @@ class SentryEventHandler:
                 timeout=10,
                 headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
             )
+        # Anthropic client — external, so it keeps trust_env (proxy) but needs the
+        # same MITM-tolerant TLS as Telegram.
+        self._llm = None
+        if ENABLE_LLM and ANTHROPIC_API_KEY:
+            ctx = ssl.create_default_context()
+            if ANTHROPIC_CA_BUNDLE:
+                ctx.load_verify_locations(ANTHROPIC_CA_BUNDLE)
+            ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            if ANTHROPIC_SSL_INSECURE:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            self._llm = httpx.AsyncClient(timeout=30, verify=ctx)
 
     # -------------------------------------------------- counting + send decision
     async def register_and_decide(self, issue_id: str, title: str):
@@ -166,6 +180,8 @@ class SentryEventHandler:
             await self._api.aclose()
         if self._gitlab is not None:
             await self._gitlab.aclose()
+        if self._llm is not None:
+            await self._llm.aclose()
 
     # ---------------------------------------------------------- project names
     async def resolve_project(self, project):
@@ -610,11 +626,11 @@ class SentryEventHandler:
         # dump the prompt so you can inspect it (even while ENABLE_LLM is off)
         log.info("LLM prompt preview:\n%s", prompt)
 
-        if not (ENABLE_LLM and ANTHROPIC_API_KEY):
+        if self._llm is None:
             return None
 
         try:
-            r = await self._client.post(
+            r = await self._llm.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
                     "x-api-key": ANTHROPIC_API_KEY,
