@@ -99,6 +99,9 @@ class SentryEventHandler:
                 timeout=10,
                 headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
             )
+        # issue_id -> (blame_sha, analysis text): reuse the LLM answer until the
+        # crash-line commit changes, so repeats of the same issue don't re-call the LLM
+        self._analysis_cache: dict[str, tuple] = {}
         # Anthropic client — external, so it keeps trust_env (proxy) but needs the
         # same MITM-tolerant TLS as Telegram.
         self._llm = None
@@ -588,10 +591,19 @@ class SentryEventHandler:
     # ------------------------------------------------------------- LLM (future)
     async def analyze(self, p: dict):
         """
-        Ask an LLM for a likely cause + suggested fix.
-        Returns None unless ENABLE_LLM=true and an API key is set, so today this
-        is a no-op. Uses httpx directly -> no extra dependency to install now.
+        Ask an LLM for a likely cause + suggested fix. Returns None unless the LLM
+        is enabled. Cached per issue (keyed by the crash-line commit) so repeats of
+        the same issue reuse the answer until the code changes.
         """
+        issue_id = p.get("issue_id")
+        blame_sha = (p.get("blame") or {}).get("sha_full") or "-"
+        # cache hit -> skip the GitLab fetches, prompt build, and LLM call
+        if self._llm is not None and issue_id:
+            hit = self._analysis_cache.get(issue_id)
+            if hit and hit[0] == blame_sha:
+                log.info("llm cache hit issue=%s commit=%s", issue_id, blame_sha[:8])
+                return hit[1]
+
         # source window + the diff of the commit that last touched the crash line
         # ("previous -> current state"), both reusing the file located in process()
         loc = p.get("_loc")
@@ -648,7 +660,10 @@ class SentryEventHandler:
             text = "".join(
                 b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text"
             ).strip()
-            return ("🤖 " + esc(text)) if text else None
+            result = ("🤖 " + esc(text)) if text else None
+            if result and issue_id:
+                self._analysis_cache[issue_id] = (blame_sha, result)
+            return result
         except Exception as e:
             log.warning("LLM analysis failed: %s", e)
             return None
