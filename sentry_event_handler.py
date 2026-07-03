@@ -71,7 +71,7 @@ class SentryEventHandler:
         )
         self._db.commit()
         self._lock = asyncio.Lock()
-        self._prompt_logged = False   # log the LLM prompt once, so you can inspect it
+        self._prompt_logged = True   # log the LLM prompt once, so you can inspect it
 
         # project id -> name cache (error webhooks only carry the numeric id)
         self._proj_cache: dict[str, str] = {}
@@ -88,6 +88,7 @@ class SentryEventHandler:
                 headers={"Authorization": f"Bearer {SENTRY_API_TOKEN}"},
             )
         # GitLab client for source lookup (internal -> bypass the proxy, trust_env=False)
+        self._path_cache: dict[str, str] = {}   # (repo, module) -> resolved repo path
         self._gitlab = None
         if GITLAB_URL and GITLAB_TOKEN and GITLAB_PROJECTS:
             self._gitlab = httpx.AsyncClient(
@@ -355,6 +356,18 @@ class SentryEventHandler:
         if p.get("culprit"):
             lines.append(f"<b>Culprit:</b> <code>{esc(p['culprit'])}</code>")
 
+        # who last changed the crash line (GitLab blame)
+        b = p.get("blame")
+        if b and b.get("author"):
+            who = esc(b["author"])
+            extra = " · ".join(x for x in (
+                f"<code>{esc(b['sha'])}</code>" if b.get("sha") else "",
+                esc(b["date"]) if b.get("date") else "",
+                esc(b["subject"]) if b.get("subject") else "",
+            ) if x)
+            lines.append(f"<b>Author</b> (L{esc(b.get('line'))}): {who}"
+                         + (f" — {extra}" if extra else ""))
+
         meta = []
         if p.get("level"):      meta.append(f"level {esc(p['level'])}")
         if p.get("count"):      meta.append(f"events {esc(p['count'])}")
@@ -404,8 +417,8 @@ class SentryEventHandler:
                 seen.add(p); out.append(p)
         return out
 
-    async def fetch_source(self, p: dict):
-        """Pull the source around the crash line from GitLab. Returns text or None."""
+    async def locate_source(self, p: dict):
+        """Resolve (proj_enc, path, lineno) for the crash frame, or None. Cached per file."""
         if self._gitlab is None:
             return None
         repo = GITLAB_PROJECTS.get(str(p.get("project_id")))
@@ -416,25 +429,63 @@ class SentryEventHandler:
             return None
         proj_enc = urllib.parse.quote(str(repo), safe="")
 
-        # verify the project resolves first, so we can tell "wrong project" from
-        # "wrong path". GITLAB_PROJECTS must be a numeric id or full namespace path.
-        try:
-            pr = await self._gitlab.get(f"/api/v4/projects/{proj_enc}")
-        except Exception as e:
-            log.warning("gitlab project error repo=%s: %s", repo, e)
-            return None
-        if pr.status_code != 200:
-            log.warning("gitlab project NOT FOUND repo=%s (%s) — GITLAB_PROJECTS needs a "
-                        "numeric project id or the full namespace path (e.g. mobile/billing)",
-                        repo, pr.status_code)
-            return None
+        ckey = f"{repo}::{frame.get('module')}"
+        path = self._path_cache.get(ckey)
+        if path is None:
+            # verify the project resolves first, so we can tell "wrong project" from
+            # "wrong path". GITLAB_PROJECTS must be a numeric id or full namespace path.
+            try:
+                pr = await self._gitlab.get(f"/api/v4/projects/{proj_enc}")
+            except Exception as e:
+                log.warning("gitlab project error repo=%s: %s", repo, e)
+                return None
+            if pr.status_code != 200:
+                log.warning("gitlab project NOT FOUND repo=%s (%s) — GITLAB_PROJECTS needs a "
+                            "numeric project id or the full namespace path (e.g. mobile/billing)",
+                            repo, pr.status_code)
+                return None
+            path = await self._resolve_path(proj_enc, frame)
+            if not path:
+                log.warning("gitlab: file not found repo=%s file=%s tried=%s",
+                            repo, frame.get("filename"), self._candidate_paths(frame))
+                return None
+            self._path_cache[ckey] = path
+        return proj_enc, path, int(frame["lineno"])
 
-        path = await self._resolve_path(proj_enc, frame)
-        if not path:
-            log.warning("gitlab: file not found repo=%s file=%s tried=%s",
-                        repo, frame.get("filename"), self._candidate_paths(frame))
+    async def fetch_source(self, loc):
+        """Source window around the crash line (loc from locate_source)."""
+        proj_enc, path, lineno = loc
+        return await self._read_file(proj_enc, path, lineno)
+
+    async def fetch_blame(self, loc):
+        """Who last changed the crash line — GitLab blame for that single line."""
+        proj_enc, path, lineno = loc
+        enc = urllib.parse.quote(path, safe="")
+        try:
+            r = await self._gitlab.get(
+                f"/api/v4/projects/{proj_enc}/repository/files/{enc}/blame",
+                params={"ref": GITLAB_REF, "range[start]": lineno, "range[end]": lineno},
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            log.warning("gitlab blame error path=%s: %s", path, e)
             return None
-        return await self._read_file(proj_enc, path, int(frame["lineno"]))
+        commit = ((data[0] if data else {}) or {}).get("commit") or {}
+        if not commit:
+            return None
+        sha = (commit.get("id") or "")[:8]
+        msg = (commit.get("message") or "").strip()
+        log.info("gitlab blame path=%s line=%d author=%s commit=%s",
+                 path, lineno, commit.get("author_name"), sha)
+        return {
+            "author": commit.get("author_name"),
+            "email": commit.get("author_email"),
+            "sha": sha,
+            "subject": (msg.splitlines()[0] if msg else "")[:80],
+            "date": (commit.get("committed_date") or "")[:10],
+            "line": lineno,
+        }
 
     async def _resolve_path(self, proj_enc: str, frame: dict):
         """Convention paths first; fall back to a repo filename search (multi-module)."""
@@ -500,9 +551,10 @@ class SentryEventHandler:
         Returns None unless ENABLE_LLM=true and an API key is set, so today this
         is a no-op. Uses httpx directly -> no extra dependency to install now.
         """
-        # fetch source only when we'll use the prompt: for the one-time preview,
-        # or when the LLM is actually enabled (avoids a GitLab call per alert)
-        source = await self.fetch_source(p)
+        # source window (reuses the file located in process()); only when the prompt
+        # is actually used: the one-time preview, or when the LLM is enabled
+        need = (not self._prompt_logged)
+        source = await self.fetch_source(p["_loc"]) if (need and p.get("_loc")) else None
 
         chain = "\n".join(f"{t}: {v}" for t, v in (p.get("exc_chain") or [])) \
             or f"{p.get('type')}: {p.get('value')}"
@@ -585,7 +637,11 @@ class SentryEventHandler:
             p["status"] = status
             # numeric project id -> name (None falls back to "sentry" in the header)
             p["project"] = await self.resolve_project(p.get("project"))
-            analysis = await self.analyze(p)              # None today
+            # locate the crash file once -> reused for blame (author) and source
+            p["_loc"] = await self.locate_source(p)
+            if p["_loc"]:
+                p["blame"] = await self.fetch_blame(p["_loc"])
+            analysis = await self.analyze(p)              # None until ENABLE_LLM=true
             await self._send(self.build_message(p, analysis))
             log.info("sent issue=%s status=%s (24h/30m/5m=%s/%s/%s)",
                      p["issue_id"], status, p["c24h"], p["c30m"], p["c5m"])
