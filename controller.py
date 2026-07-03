@@ -13,13 +13,15 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, Request, Response
 
-from config import BOT_TOKEN, DB_PATH, SEND_WINDOWS, ENABLE_LLM, TELEGRAM_POLLING, log
+from config import BOT_TOKEN, TELEGRAM_POLLING, banner, log
 from chat_bot_handler import ChatBotHandler
 from sentry_event_handler import SentryEventHandler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log.info("\n%s", banner())        # effective config first, before we touch the network
+
     client = httpx.AsyncClient(timeout=15)
     bot = ChatBotHandler(BOT_TOKEN)
     sentry = SentryEventHandler(send=bot.send, client=client)
@@ -29,8 +31,7 @@ async def lifespan(app: FastAPI):
     app.state.sentry = sentry
 
     await bot.start(polling=TELEGRAM_POLLING)
-    log.info("started; db=%s windows=%s llm=%s polling=%s",
-             DB_PATH, SEND_WINDOWS, ENABLE_LLM, TELEGRAM_POLLING)
+    log.info("startup complete")
     yield
 
     await bot.stop()

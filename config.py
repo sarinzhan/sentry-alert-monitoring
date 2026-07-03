@@ -116,3 +116,40 @@ LLM_STACK_LIB_MAX = int(os.environ.get("LLM_STACK_LIB_MAX", "5"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sentry-telegram")
+
+
+def _mask(v):
+    """Show only the ends of a secret so the log is safe but still verifiable."""
+    if not v:
+        return "-"
+    s = str(v)
+    return "****" if len(s) <= 8 else f"{s[:4]}…{s[-4:]} (len {len(s)})"
+
+
+def banner():
+    """Multi-line summary of the effective config at startup (secrets masked)."""
+    chat = f"{CHAT_ID}" + (f" topic={CHAT_THREAD_ID}" if CHAT_THREAD_ID else "")
+    lines = [
+        "=" * 64,
+        " sentry-telegram — starting",
+        "=" * 64,
+        f"  listen            {HOST}:{PORT}",
+        f"  db                {DB_PATH}",
+        f"  telegram bot      {_mask(BOT_TOKEN)}",
+        f"  telegram chat     {chat}",
+        f"  telegram polling  {TELEGRAM_POLLING}",
+        f"  telegram tls      insecure={TELEGRAM_SSL_INSECURE} ca={TELEGRAM_CA_BUNDLE or '-'}",
+        f"  sentry signature  {'on (' + _mask(CLIENT_SECRET) + ')' if CLIENT_SECRET else 'OFF — no verification'}",
+        f"  sentry api        url={SENTRY_API_URL} org={SENTRY_ORG} token={_mask(SENTRY_API_TOKEN)}",
+        f"  project names     {PROJECT_NAMES or '-'}",
+        f"  debounce windows  {SEND_WINDOWS}  spike_threshold={SPIKE_THRESHOLD}",
+        f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
+        f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
+        f"  llm stack         lib_max={LLM_STACK_LIB_MAX}",
+        f"  gitlab            url={GITLAB_URL or '-'} ref={GITLAB_REF} "
+        f"token={_mask(GITLAB_TOKEN)} ctx_lines={GITLAB_CONTEXT_LINES}",
+        f"  gitlab projects   {GITLAB_PROJECTS or '-'}",
+        f"  debug             log_raw_payload={LOG_RAW_PAYLOAD} log_llm_prompt={LOG_LLM_PROMPT}",
+        "=" * 64,
+    ]
+    return "\n".join(lines)
