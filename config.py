@@ -59,8 +59,9 @@ GITLAB_URL   = os.environ.get("GITLAB_URL", "").rstrip("/")
 GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "").strip()
 GITLAB_REF   = os.environ.get("GITLAB_REF", "main")
 GITLAB_CONTEXT_LINES = int(os.environ.get("GITLAB_CONTEXT_LINES", "25"))
+# accept either name (GITLAB_PROJECTS or the older PROJECT_REPOS)
 GITLAB_PROJECTS = {}
-for _pair in os.environ.get("GITLAB_PROJECTS", "").split(","):
+for _pair in (os.environ.get("GITLAB_PROJECTS") or os.environ.get("PROJECT_REPOS", "")).split(","):
     if ":" in _pair:
         _k, _v = _pair.split(":", 1)
         if _k.strip() and _v.strip():
@@ -103,6 +104,9 @@ ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 # Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
 # actually generated). Too low truncates the cause/fix mid-sentence.
 ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
+# Stack sent to the LLM: keep the full in-app (project) trace, but at most this many
+# library frames (framework noise). All-lib crashes still show the top few for context.
+LLM_STACK_LIB_MAX = int(os.environ.get("LLM_STACK_LIB_MAX", "5"))
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

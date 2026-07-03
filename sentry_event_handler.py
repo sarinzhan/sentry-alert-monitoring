@@ -20,7 +20,8 @@ import httpx
 
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
-    ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, LOG_RAW_PAYLOAD,
+    ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
+    LLM_STACK_LIB_MAX, LOG_RAW_PAYLOAD,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
     GITLAB_URL, GITLAB_TOKEN, GITLAB_REF, GITLAB_CONTEXT_LINES, GITLAB_PROJECTS, log,
 )
@@ -287,9 +288,16 @@ class SentryEventHandler:
             return f"{base} in {e['function']}{tag}"
 
         frames = [_fmt(e) for e in frames_struct[:5]]                 # short, for Telegram
-        # for the LLM: prefer in-app frames, keep many more of them
-        app_only = [e for e in frames_struct if e["in_app"]]
-        frames_full = [_fmt(e) for e in (app_only or frames_struct)[:25]]
+        # for the LLM: the full in-app (project) trace, plus only the top few
+        # library frames for crash-site context (lib frames are mostly noise)
+        frames_full, lib_seen = [], 0
+        for e in frames_struct:                                       # crash-site first
+            if e["in_app"]:
+                frames_full.append(_fmt(e))
+            elif lib_seen < LLM_STACK_LIB_MAX:
+                frames_full.append(_fmt(e))
+                lib_seen += 1
+        frames_full = frames_full[:60]                                # hard safety cap
 
         if exc_value:
             exc_value = str(exc_value)[:1000]
@@ -368,10 +376,10 @@ class SentryEventHandler:
     # ------------------------------------------------------------- gitlab source
     @staticmethod
     def _pick_frame(p: dict):
-        """The frame to fetch: topmost in-app frame with a line number, else any."""
+        """Frame to fetch source for: topmost in-app frame with a line number.
+        Only in-app frames — library files (Spring, etc.) aren't in the repo."""
         frames = p.get("frames_struct") or []
-        return (next((f for f in frames if f["in_app"] and f.get("lineno")), None)
-                or next((f for f in frames if f.get("lineno")), None))
+        return next((f for f in frames if f["in_app"] and f.get("lineno")), None)
 
     @staticmethod
     def _candidate_paths(frame: dict):
@@ -406,33 +414,84 @@ class SentryEventHandler:
         frame = self._pick_frame(p)
         if not frame:
             return None
-        lineno = int(frame["lineno"])
-        lo, hi = max(1, lineno - GITLAB_CONTEXT_LINES), lineno + GITLAB_CONTEXT_LINES
         proj_enc = urllib.parse.quote(str(repo), safe="")
-        tried = self._candidate_paths(frame)
-        for path in tried:
-            path_enc = urllib.parse.quote(path, safe="")
-            try:
-                r = await self._gitlab.get(
-                    f"/api/v4/projects/{proj_enc}/repository/files/{path_enc}/raw",
-                    params={"ref": GITLAB_REF},
-                )
-            except Exception as e:
-                log.warning("gitlab fetch error repo=%s path=%s: %s", repo, path, e)
-                return None
-            if r.status_code == 404:
+
+        # verify the project resolves first, so we can tell "wrong project" from
+        # "wrong path". GITLAB_PROJECTS must be a numeric id or full namespace path.
+        try:
+            pr = await self._gitlab.get(f"/api/v4/projects/{proj_enc}")
+        except Exception as e:
+            log.warning("gitlab project error repo=%s: %s", repo, e)
+            return None
+        if pr.status_code != 200:
+            log.warning("gitlab project NOT FOUND repo=%s (%s) — GITLAB_PROJECTS needs a "
+                        "numeric project id or the full namespace path (e.g. mobile/billing)",
+                        repo, pr.status_code)
+            return None
+
+        path = await self._resolve_path(proj_enc, frame)
+        if not path:
+            log.warning("gitlab: file not found repo=%s file=%s tried=%s",
+                        repo, frame.get("filename"), self._candidate_paths(frame))
+            return None
+        return await self._read_file(proj_enc, path, int(frame["lineno"]))
+
+    async def _resolve_path(self, proj_enc: str, frame: dict):
+        """Convention paths first; fall back to a repo filename search (multi-module)."""
+        for path in self._candidate_paths(frame):
+            enc = urllib.parse.quote(path, safe="")
+            r = await self._gitlab.get(
+                f"/api/v4/projects/{proj_enc}/repository/files/{enc}",
+                params={"ref": GITLAB_REF},
+            )
+            if r.status_code == 200:
+                return path
+        # fallback: search the repo for the class, match by filename + package path
+        module = frame.get("module") or ""
+        filename = frame.get("filename") or ""
+        classname = module.rsplit(".", 1)[-1] if module else filename.rsplit(".", 1)[0]
+        pkgpath = module.rsplit(".", 1)[0].replace(".", "/") if "." in module else ""
+        try:
+            r = await self._gitlab.get(
+                f"/api/v4/projects/{proj_enc}/search",
+                params={"scope": "blobs", "search": classname, "ref": GITLAB_REF},
+            )
+            r.raise_for_status()
+            hits = r.json()
+        except Exception as e:
+            log.warning("gitlab search error: %s", e)
+            return None
+        best = None
+        for h in hits if isinstance(hits, list) else []:
+            hp = h.get("path", "")
+            if filename and not (hp.endswith("/" + filename) or hp == filename):
                 continue
-            if r.status_code != 200:
-                log.warning("gitlab fetch %s repo=%s path=%s", r.status_code, repo, path)
-                return None
-            lines = r.text.splitlines()
-            window = lines[lo - 1:hi]
-            body = "\n".join(f"{i}{'>' if i == lineno else ':'} {t}"
-                             for i, t in enumerate(window, start=lo))
-            log.info("gitlab source ok repo=%s path=%s line=%d", repo, path, lineno)
-            return f"{path} (ref {GITLAB_REF}), lines {lo}-{min(hi, len(lines))}:\n{body}"
-        log.warning("gitlab: file not found repo=%s tried=%s", repo, tried)
-        return None
+            if pkgpath and hp.endswith(f"{pkgpath}/{filename}"):
+                log.info("gitlab: located via search -> %s", hp)
+                return hp
+            best = best or hp
+        if best:
+            log.info("gitlab: located via search (loose) -> %s", best)
+        return best
+
+    async def _read_file(self, proj_enc: str, path: str, lineno: int):
+        lo, hi = max(1, lineno - GITLAB_CONTEXT_LINES), lineno + GITLAB_CONTEXT_LINES
+        enc = urllib.parse.quote(path, safe="")
+        try:
+            r = await self._gitlab.get(
+                f"/api/v4/projects/{proj_enc}/repository/files/{enc}/raw",
+                params={"ref": GITLAB_REF},
+            )
+            r.raise_for_status()
+        except Exception as e:
+            log.warning("gitlab read error path=%s: %s", path, e)
+            return None
+        lines = r.text.splitlines()
+        window = lines[lo - 1:hi]
+        body = "\n".join(f"{i}{'>' if i == lineno else ':'} {t}"
+                         for i, t in enumerate(window, start=lo))
+        log.info("gitlab source ok path=%s line=%d", path, lineno)
+        return f"{path} (ref {GITLAB_REF}), lines {lo}-{min(hi, len(lines))}:\n{body}"
 
     # ------------------------------------------------------------- LLM (future)
     async def analyze(self, p: dict):
