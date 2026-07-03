@@ -20,8 +20,9 @@ import urllib.parse
 import httpx
 
 from config import (
-    CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
+    CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD, STAT_WINDOWS,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
+    ANTHROPIC_PRICE_IN, ANTHROPIC_PRICE_OUT,
     ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE,
     LLM_STACK_LIB_MAX, LOG_RAW_PAYLOAD, LOG_LLM_PROMPT,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
@@ -71,6 +72,23 @@ class SentryEventHandler:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS ix_event_log ON event_log (issue_id, ts)"
         )
+        # cached LLM analysis per issue, keyed also by the crash-line commit so it
+        # invalidates when the code changes. Persisted so it survives restarts.
+        self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_cache (
+                issue_id  TEXT PRIMARY KEY,
+                blame_sha TEXT,
+                analysis  TEXT NOT NULL,
+                cost      REAL,
+                updated   REAL NOT NULL
+            )
+            """
+        )
+        try:                                                  # migrate older DBs
+            self._db.execute("ALTER TABLE analysis_cache ADD COLUMN cost REAL")
+        except sqlite3.OperationalError:
+            pass
         self._db.commit()
         self._lock = asyncio.Lock()
         self._prompt_logged = True   # log the LLM prompt once, so you can inspect it
@@ -99,9 +117,6 @@ class SentryEventHandler:
                 timeout=10,
                 headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
             )
-        # issue_id -> (blame_sha, analysis text): reuse the LLM answer until the
-        # crash-line commit changes, so repeats of the same issue don't re-call the LLM
-        self._analysis_cache: dict[str, tuple] = {}
         # Anthropic client — external, so it keeps trust_env (proxy) but needs the
         # same MITM-tolerant TLS as Telegram.
         self._llm = None
@@ -119,8 +134,8 @@ class SentryEventHandler:
     async def register_and_decide(self, issue_id: str, title: str):
         """
         Record this occurrence, then decide whether to send and with what status.
-        Returns (send: bool, status: str|None, c24h, c30m, c5m). Under a lock so
-        concurrent webhooks for the same issue can't race the counts/state.
+        Returns (send: bool, status: str|None, counts: list[int] over STAT_WINDOWS).
+        Under a lock so concurrent webhooks for the same issue can't race the state.
 
         status:
           new         first message ever for this issue
@@ -130,18 +145,14 @@ class SentryEventHandler:
         now = time.time()
         async with self._lock:
             self._db.execute("INSERT INTO event_log (issue_id, ts) VALUES (?, ?)", (issue_id, now))
-            self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - 86400,))  # prune >24h
+            self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - max(STAT_WINDOWS),))
 
-            def count(since=None):
-                if since is None:
-                    return self._db.execute(
-                        "SELECT COUNT(*) FROM event_log WHERE issue_id=?", (issue_id,)
-                    ).fetchone()[0]
+            def count(since):
                 return self._db.execute(
                     "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, since)
                 ).fetchone()[0]
 
-            c24, c30, c5 = count(), count(now - 1800), count(now - 300)
+            counts = [count(now - w) for w in STAT_WINDOWS]   # e.g. [24h, 30m, 5m]
 
             row = self._db.execute(
                 "SELECT last_sent, step FROM issue_state WHERE issue_id=?", (issue_id,)
@@ -154,7 +165,7 @@ class SentryEventHandler:
                     (issue_id, now, 1, title, now),
                 )
                 self._db.commit()
-                return True, "new", c24, c30, c5
+                return True, "new", counts
 
             last_sent, step = row
             # events since our last message for this issue -> escalation signal
@@ -168,7 +179,7 @@ class SentryEventHandler:
 
             if not (window_ok or escalating):
                 self._db.commit()                             # persist the event_log insert/prune
-                return False, None, c24, c30, c5
+                return False, None, counts
 
             # a send resets the baseline, so escalation needs another THRESHOLD events
             self._db.execute(
@@ -176,7 +187,7 @@ class SentryEventHandler:
                 (now, step + 1, title, now, issue_id),
             )
             self._db.commit()
-            return True, ("escalating" if escalating else "ongoing"), c24, c30, c5
+            return True, ("escalating" if escalating else "ongoing"), counts
 
     async def aclose(self):
         if self._api is not None:
@@ -359,14 +370,22 @@ class SentryEventHandler:
 
         # line 1: <emoji> project · env · status
         lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
-        # line 2: #<last6 of event uuid> · 24h/30m/5m
-        short = (p.get("event_id") or "?")[-6:]
-        lines.append(
-            f"<code>#{esc(short)}</code> · "
-            f"{esc(p.get('c24h', 0))}/{esc(p.get('c30m', 0))}/{esc(p.get('c5m', 0))} (24h/30m/5m)"
-        )
+        # line 2: <blame author> · <commit date> · counts   (fallback: #uuid · counts)
+        counts = "/".join(esc(c) for c in (p.get("counts") or []))
+        b = p.get("blame") or {}
+        if b.get("author"):
+            left = f"{esc(b['author'])} · {esc(b.get('date') or '?')}"
+        else:
+            left = f"<code>#{esc((p.get('event_id') or '?')[-6:])}</code>"
+        lines.append(f"{left} · {counts}" if counts else left)
         lines.append("")
 
+        # LLM cause / fix first (only present for escalating prod alerts)
+        if analysis:
+            lines.append(analysis)
+            lines.append("")
+
+        # then the rest
         lines.append(f"<b>{esc(p.get('title'))}</b>")
         if p.get("value") and p.get("value") != p.get("title"):
             lines.append(f"<code>{esc(p['value'])}</code>")
@@ -374,18 +393,6 @@ class SentryEventHandler:
 
         if p.get("culprit"):
             lines.append(f"<b>Culprit:</b> <code>{esc(p['culprit'])}</code>")
-
-        # who last changed the crash line (GitLab blame)
-        b = p.get("blame")
-        if b and b.get("author"):
-            who = esc(b["author"])
-            extra = " · ".join(x for x in (
-                f"<code>{esc(b['sha'])}</code>" if b.get("sha") else "",
-                esc(b["date"]) if b.get("date") else "",
-                esc(b["subject"]) if b.get("subject") else "",
-            ) if x)
-            lines.append(f"<b>Author</b> (L{esc(b.get('line'))}): {who}"
-                         + (f" — {extra}" if extra else ""))
 
         meta = []
         if p.get("level"):      meta.append(f"level {esc(p['level'])}")
@@ -397,11 +404,20 @@ class SentryEventHandler:
         if p.get("frames"):
             lines.append("<pre>" + "\n".join(esc(f) for f in p["frames"]) + "</pre>")
 
-        if analysis:
-            lines += ["", analysis]
-
         if p.get("url"):
             lines += ["", f'<a href="{esc(p["url"])}">Open in Sentry →</a>']
+
+        # bottom: LLM API cost, or "cached" (with what it saved) on a cache hit
+        m = p.get("llm_meta")
+        if m:
+            if m.get("cached"):
+                saved = f" (saved ~${m['cost']:.4f})" if m.get("cost") else ""
+                lines.append(f"<i>💰 LLM: cached{esc(saved)}</i>")
+            else:
+                lines.append(
+                    f"<i>💰 LLM: ${m.get('cost', 0):.4f} · "
+                    f"{esc(m.get('in', 0))} in / {esc(m.get('out', 0))} out</i>"
+                )
 
         return "\n".join(lines)
 
@@ -597,12 +613,16 @@ class SentryEventHandler:
         """
         issue_id = p.get("issue_id")
         blame_sha = (p.get("blame") or {}).get("sha_full") or "-"
-        # cache hit -> skip the GitLab fetches, prompt build, and LLM call
+        # cache hit (SQLite, survives restart) -> skip GitLab fetches, prompt, LLM call
         if self._llm is not None and issue_id:
-            hit = self._analysis_cache.get(issue_id)
-            if hit and hit[0] == blame_sha:
+            row = self._db.execute(
+                "SELECT analysis, cost FROM analysis_cache WHERE issue_id=? AND blame_sha=?",
+                (issue_id, blame_sha),
+            ).fetchone()
+            if row:
                 log.info("llm cache hit issue=%s commit=%s", issue_id, blame_sha[:8])
-                return hit[1]
+                p["llm_meta"] = {"cached": True, "cost": row[1]}
+                return row[0]
 
         # source window + the diff of the commit that last touched the crash line
         # ("previous -> current state"), both reusing the file located in process()
@@ -657,12 +677,25 @@ class SentryEventHandler:
                 timeout=30,
             )
             r.raise_for_status()
+            data = r.json()
+            usage = data.get("usage") or {}
+            in_tok = usage.get("input_tokens", 0)
+            out_tok = usage.get("output_tokens", 0)
+            cost = in_tok / 1e6 * ANTHROPIC_PRICE_IN + out_tok / 1e6 * ANTHROPIC_PRICE_OUT
             text = "".join(
-                b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text"
+                b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
             ).strip()
             result = ("🤖 " + esc(text)) if text else None
+            p["llm_meta"] = {"cached": False, "cost": cost, "in": in_tok, "out": out_tok}
+            log.info("llm call issue=%s in=%d out=%d cost=$%.4f",
+                     issue_id, in_tok, out_tok, cost)
             if result and issue_id:
-                self._analysis_cache[issue_id] = (blame_sha, result)
+                self._db.execute(
+                    "INSERT OR REPLACE INTO analysis_cache(issue_id, blame_sha, analysis, cost, updated) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (issue_id, blame_sha, result, cost, time.time()),
+                )
+                self._db.commit()
             return result
         except Exception as e:
             log.warning("LLM analysis failed: %s", e)
@@ -694,11 +727,10 @@ class SentryEventHandler:
                 log.info("ignored action=%s issue=%s", p.get("action"), p["issue_id"])
                 return
             # record the occurrence, get counts, and decide send + status atomically
-            send, status, p["c24h"], p["c30m"], p["c5m"] = \
+            send, status, p["counts"] = \
                 await self.register_and_decide(p["issue_id"], p.get("title") or "")
             if not send:
-                log.info("debounced issue=%s (24h/30m/5m=%s/%s/%s)",
-                         p["issue_id"], p["c24h"], p["c30m"], p["c5m"])
+                log.info("debounced issue=%s counts=%s", p["issue_id"], p["counts"])
                 # debug: build + log the prompt for debounced events too
                 if LOG_LLM_PROMPT:
                     p["_loc"] = await self.locate_source(p)
@@ -709,13 +741,14 @@ class SentryEventHandler:
             p["status"] = status
             # numeric project id -> name (None falls back to "sentry" in the header)
             p["project"] = await self.resolve_project(p.get("project"))
-            # locate the crash file once -> reused for blame (author) and source
+            # locate the crash file once -> reused for blame (author, shown always) + source
             p["_loc"] = await self.locate_source(p)
             if p["_loc"]:
                 p["blame"] = await self.fetch_blame(p["_loc"])
-            analysis = await self.analyze(p)              # None until ENABLE_LLM=true
+            # LLM cause/fix only for escalating alerts in prod
+            is_prod = (p.get("environment") or "").lower() == "prod"
+            analysis = await self.analyze(p) if (status == "escalating" and is_prod) else None
             await self._send(self.build_message(p, analysis))
-            log.info("sent issue=%s status=%s (24h/30m/5m=%s/%s/%s)",
-                     p["issue_id"], status, p["c24h"], p["c30m"], p["c5m"])
+            log.info("sent issue=%s status=%s counts=%s", p["issue_id"], status, p["counts"])
         except Exception as e:
             log.exception("process failed: %s", e)

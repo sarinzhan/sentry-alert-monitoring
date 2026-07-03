@@ -102,6 +102,24 @@ SEND_WINDOWS = [60, 300]
 # 0 disables escalation.
 SPIKE_THRESHOLD = int(os.environ.get("SPIKE_THRESHOLD", "5"))
 
+# The three occurrence-count windows shown on line 2 of the message (e.g. 437/15/6).
+# Durations: suffix s/m/h/d, bare number = seconds. Default 24h / 30m / 5m.
+def _dur(x):
+    x = x.strip().lower()
+    if not x:
+        return None
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(x[-1], 1)
+    if x[-1] in "smhd":
+        x = x[:-1]
+    try:
+        return int(float(x) * mult)
+    except ValueError:
+        return None
+
+STAT_WINDOWS = [d for d in (_dur(x) for x in os.environ.get("STAT_WINDOWS", "24h,30m,5m").split(",")) if d]
+if len(STAT_WINDOWS) != 3:
+    STAT_WINDOWS = [86400, 1800, 300]
+
 # Future feature: ask an LLM for likely cause + fix. Off by default.
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
@@ -109,6 +127,9 @@ ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 # Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
 # actually generated). Too low truncates the cause/fix mid-sentence.
 ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
+# Price per 1M tokens, for the cost line in the message. Defaults = Opus 4.8 ($5/$25).
+ANTHROPIC_PRICE_IN  = float(os.environ.get("ANTHROPIC_PRICE_IN", "5.0"))
+ANTHROPIC_PRICE_OUT = float(os.environ.get("ANTHROPIC_PRICE_OUT", "25.0"))
 # Stack sent to the LLM: keep the full in-app (project) trace, but at most this many
 # library frames (framework noise). All-lib crashes still show the top few for context.
 LLM_STACK_LIB_MAX = int(os.environ.get("LLM_STACK_LIB_MAX", "5"))
@@ -151,6 +172,7 @@ def banner():
         f"  sentry api        url={SENTRY_API_URL} org={SENTRY_ORG} token={_mask(SENTRY_API_TOKEN)}",
         f"  project names     {PROJECT_NAMES or '-'}",
         f"  debounce windows  {SEND_WINDOWS}  spike_threshold={SPIKE_THRESHOLD}",
+        f"  stat windows      {STAT_WINDOWS} (seconds)",
         f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
         f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
         f"  llm tls           insecure={ANTHROPIC_SSL_INSECURE} ca={ANTHROPIC_CA_BUNDLE or '-'}",
