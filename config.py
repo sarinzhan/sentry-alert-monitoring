@@ -51,6 +51,21 @@ for _pair in os.environ.get("PROJECT_NAMES", "").split(","):
         if _k.strip() and _v.strip():
             PROJECT_NAMES[_k.strip()] = _v.strip()
 
+# GitLab source lookup — pull the failing file so the LLM sees real code, not just
+# a stack. GITLAB_PROJECTS maps a Sentry project id to a GitLab project (path or
+# numeric id), e.g. "3:mobile/billing-service,4:mobile/payments". Ref defaults to
+# GITLAB_REF (releases aren't tied to commits yet, so we read the branch head).
+GITLAB_URL   = os.environ.get("GITLAB_URL", "").rstrip("/")
+GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "").strip()
+GITLAB_REF   = os.environ.get("GITLAB_REF", "main")
+GITLAB_CONTEXT_LINES = int(os.environ.get("GITLAB_CONTEXT_LINES", "25"))
+GITLAB_PROJECTS = {}
+for _pair in os.environ.get("GITLAB_PROJECTS", "").split(","):
+    if ":" in _pair:
+        _k, _v = _pair.split(":", 1)
+        if _k.strip() and _v.strip():
+            GITLAB_PROJECTS[_k.strip()] = _v.strip()
+
 # TLS for the Telegram API. On corporate networks the bot reaches api.telegram.org
 # through an intercepting HTTPS proxy whose internal CA must be trusted. Point this
 # at the corporate CA bundle (PEM). Leave empty to use the system/certifi trust store.

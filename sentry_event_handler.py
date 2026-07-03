@@ -14,18 +14,20 @@ import hmac
 import asyncio
 import hashlib
 import sqlite3
+import urllib.parse
 
 import httpx
 
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, LOG_RAW_PAYLOAD,
-    SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES, log,
+    SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
+    GITLAB_URL, GITLAB_TOKEN, GITLAB_REF, GITLAB_CONTEXT_LINES, GITLAB_PROJECTS, log,
 )
+from utils import esc
 
 # status -> emoji for the message header
 STATUS_EMOJI = {"new": "🆕", "ongoing": "🔁", "escalating": "🚨"}
-from utils import esc
 
 
 # Sentry issue lifecycle actions we treat as "an error is happening".
@@ -83,6 +85,15 @@ class SentryEventHandler:
                 trust_env=False,
                 timeout=10,
                 headers={"Authorization": f"Bearer {SENTRY_API_TOKEN}"},
+            )
+        # GitLab client for source lookup (internal -> bypass the proxy, trust_env=False)
+        self._gitlab = None
+        if GITLAB_URL and GITLAB_TOKEN and GITLAB_PROJECTS:
+            self._gitlab = httpx.AsyncClient(
+                base_url=GITLAB_URL,
+                trust_env=False,
+                timeout=10,
+                headers={"PRIVATE-TOKEN": GITLAB_TOKEN},
             )
 
     # -------------------------------------------------- counting + send decision
@@ -151,6 +162,8 @@ class SentryEventHandler:
     async def aclose(self):
         if self._api is not None:
             await self._api.aclose()
+        if self._gitlab is not None:
+            await self._gitlab.aclose()
 
     # ---------------------------------------------------------- project names
     async def resolve_project(self, project):
@@ -243,23 +256,47 @@ class SentryEventHandler:
         exc_value = metadata.get("value")
 
         # event payloads carry the stacktrace; issue payloads usually don't
-        frames = []
+        # exc_chain: every exception in the chain (Caused by ...), most recent last
+        exc_chain = []
+        frames_struct = []                                # richer, for LLM + GitLab
         values = (obj.get("exception") or {}).get("values") or []
+        for v in values:
+            vt, vv = v.get("type"), v.get("value")
+            if vt or vv:
+                exc_chain.append((vt, str(vv)[:500] if vv else vv))
         if values:
-            last = values[-1]
+            last = values[-1]                             # the thrown exception
             exc_type = exc_type or last.get("type")
             exc_value = exc_value or last.get("value")
             st = (last.get("stacktrace") or {}).get("frames") or []
-            for f in reversed(st[-5:]):                   # crash site first, top 5
-                fn = f.get("function") or "?"
-                where = f.get("filename") or f.get("module") or "?"
-                lineno = f.get("lineno")
-                frames.append(f"{where}:{lineno} in {fn}" if lineno else f"{where} in {fn}")
+            for f in reversed(st):                        # crash site first
+                frames_struct.append({
+                    "function": f.get("function") or "?",
+                    "filename": f.get("filename"),
+                    "module": f.get("module"),
+                    "abs_path": _first(f.get("absPath"), f.get("abs_path")),
+                    "lineno": f.get("lineno"),
+                    "in_app": bool(f.get("inApp") if "inApp" in f else f.get("in_app")),
+                    "context_line": _first(f.get("context_line"), f.get("contextLine")),
+                })
+
+        def _fmt(e):
+            where = e["filename"] or e["module"] or "?"
+            tag = "" if e["in_app"] else " (lib)"
+            base = f"{where}:{e['lineno']}" if e["lineno"] else where
+            return f"{base} in {e['function']}{tag}"
+
+        frames = [_fmt(e) for e in frames_struct[:5]]                 # short, for Telegram
+        # for the LLM: prefer in-app frames, keep many more of them
+        app_only = [e for e in frames_struct if e["in_app"]]
+        frames_full = [_fmt(e) for e in (app_only or frames_struct)[:25]]
 
         if exc_value:
             exc_value = str(exc_value)[:1000]
 
         project = obj.get("project")
+        # keep the raw numeric project id for GitLab repo mapping (before name resolution)
+        project_id = project.get("id") if isinstance(project, dict) else project
         if isinstance(project, dict):
             project = project.get("slug") or project.get("name")
 
@@ -277,7 +314,11 @@ class SentryEventHandler:
             "user_count": _first(obj.get("userCount"), obj.get("user_count")),
             "url": _first(obj.get("permalink"), obj.get("web_url"), obj.get("url")),
             "frames": frames,
+            "frames_full": frames_full,
+            "frames_struct": frames_struct,
+            "exc_chain": exc_chain,
             "project": project,
+            "project_id": project_id,
         }
 
     # ------------------------------------------------------------- format
@@ -324,6 +365,75 @@ class SentryEventHandler:
 
         return "\n".join(lines)
 
+    # ------------------------------------------------------------- gitlab source
+    @staticmethod
+    def _pick_frame(p: dict):
+        """The frame to fetch: topmost in-app frame with a line number, else any."""
+        frames = p.get("frames_struct") or []
+        return (next((f for f in frames if f["in_app"] and f.get("lineno")), None)
+                or next((f for f in frames if f.get("lineno")), None))
+
+    @staticmethod
+    def _candidate_paths(frame: dict):
+        """Guess repo-relative paths for a (Java) frame, most specific first."""
+        module = frame.get("module") or ""
+        filename = frame.get("filename") or ""
+        paths = []
+        if frame.get("abs_path") and "/" in frame["abs_path"]:
+            paths.append(frame["abs_path"].lstrip("/"))
+        if module and "." in module:
+            pkg = module.rsplit(".", 1)[0].replace(".", "/")
+            fname = filename or (module.rsplit(".", 1)[1] + ".java")
+            paths.append(f"src/main/java/{pkg}/{fname}")
+            paths.append(f"src/main/kotlin/{pkg}/{fname}")
+            paths.append(f"{pkg}/{fname}")
+        elif filename:
+            paths.append(filename)
+        # de-dup, preserve order
+        seen, out = set(), []
+        for p in paths:
+            if p not in seen:
+                seen.add(p); out.append(p)
+        return out
+
+    async def fetch_source(self, p: dict):
+        """Pull the source around the crash line from GitLab. Returns text or None."""
+        if self._gitlab is None:
+            return None
+        repo = GITLAB_PROJECTS.get(str(p.get("project_id")))
+        if not repo:
+            return None
+        frame = self._pick_frame(p)
+        if not frame:
+            return None
+        lineno = int(frame["lineno"])
+        lo, hi = max(1, lineno - GITLAB_CONTEXT_LINES), lineno + GITLAB_CONTEXT_LINES
+        proj_enc = urllib.parse.quote(str(repo), safe="")
+        tried = self._candidate_paths(frame)
+        for path in tried:
+            path_enc = urllib.parse.quote(path, safe="")
+            try:
+                r = await self._gitlab.get(
+                    f"/api/v4/projects/{proj_enc}/repository/files/{path_enc}/raw",
+                    params={"ref": GITLAB_REF},
+                )
+            except Exception as e:
+                log.warning("gitlab fetch error repo=%s path=%s: %s", repo, path, e)
+                return None
+            if r.status_code == 404:
+                continue
+            if r.status_code != 200:
+                log.warning("gitlab fetch %s repo=%s path=%s", r.status_code, repo, path)
+                return None
+            lines = r.text.splitlines()
+            window = lines[lo - 1:hi]
+            body = "\n".join(f"{i}{'>' if i == lineno else ':'} {t}"
+                             for i, t in enumerate(window, start=lo))
+            log.info("gitlab source ok repo=%s path=%s line=%d", repo, path, lineno)
+            return f"{path} (ref {GITLAB_REF}), lines {lo}-{min(hi, len(lines))}:\n{body}"
+        log.warning("gitlab: file not found repo=%s tried=%s", repo, tried)
+        return None
+
     # ------------------------------------------------------------- LLM (future)
     async def analyze(self, p: dict):
         """
@@ -331,18 +441,27 @@ class SentryEventHandler:
         Returns None unless ENABLE_LLM=true and an API key is set, so today this
         is a no-op. Uses httpx directly -> no extra dependency to install now.
         """
+        # fetch source only when we'll use the prompt: for the one-time preview,
+        # or when the LLM is actually enabled (avoids a GitLab call per alert)
+        source = await self.fetch_source(p)
+
+        chain = "\n".join(f"{t}: {v}" for t, v in (p.get("exc_chain") or [])) \
+            or f"{p.get('type')}: {p.get('value')}"
+        stack = "\n".join(p.get("frames_full") or p.get("frames") or [])
         prompt = (
             "You are a senior backend engineer triaging a Sentry error. "
             "Reply in at most 4 short lines, plain text:\n"
             "Likely cause: <one sentence>\n"
             "Suggested fix: <one or two sentences>\n\n"
-            f"Type: {p.get('type')}\n"
-            f"Message: {p.get('value')}\n"
             f"Culprit: {p.get('culprit')}\n"
-            "Stack:\n" + "\n".join(p.get("frames") or [])
+            f"Environment: {p.get('environment')}\n"
+            f"Exception chain (most recent last):\n{chain}\n\n"
+            f"Stack (crash site first):\n{stack}"
         )
+        if source:
+            prompt += f"\n\nSource around the crash site (from GitLab):\n{source}"
 
-        # dump so you can see exactly what would be sent to the LLM,
+        # dump the prompt once so you can inspect it (even while ENABLE_LLM is off)
         log.info("LLM prompt preview (once):\n%s", prompt)
 
         if not ENABLE_LLM:
