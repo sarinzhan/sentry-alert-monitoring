@@ -42,10 +42,11 @@ SENTRY_API_TOKEN = os.environ.get("SENTRY_API_TOKEN", "").strip()
 if SENTRY_API_TOKEN == "-":            # placeholder for "not set"
     SENTRY_API_TOKEN = ""
 
-# Optional static project id -> name map for the header, e.g. "3:billing,4:payments".
-# Checked before the API lookup; the reliable option when you can't use an API token.
+# Project id -> display NAME for the message header, e.g. "3:s_billing,4:billing".
+# Checked before the Sentry API lookup. Accept SENTRY_PROJECTS (preferred) or the
+# older PROJECT_NAMES. This is separate from GITLAB_PROJECTS (id -> repo path) below.
 PROJECT_NAMES = {}
-for _pair in os.environ.get("PROJECT_NAMES", "").split(","):
+for _pair in (os.environ.get("SENTRY_PROJECTS") or os.environ.get("PROJECT_NAMES", "")).split(","):
     if ":" in _pair:
         _k, _v = _pair.split(":", 1)
         if _k.strip() and _v.strip():
@@ -57,7 +58,7 @@ for _pair in os.environ.get("PROJECT_NAMES", "").split(","):
 # GITLAB_REF (releases aren't tied to commits yet, so we read the branch head).
 GITLAB_URL   = os.environ.get("GITLAB_URL", "").rstrip("/")
 GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "").strip()
-GITLAB_REF   = os.environ.get("GITLAB_REF", "main")
+GITLAB_REF   = os.environ.get("GITLAB_REF") or os.environ.get("GITLAB_DEFAULT_REF", "main")
 GITLAB_CONTEXT_LINES = int(os.environ.get("GITLAB_CONTEXT_LINES", "25"))
 # accept either name (GITLAB_PROJECTS or the older PROJECT_REPOS)
 GITLAB_PROJECTS = {}
