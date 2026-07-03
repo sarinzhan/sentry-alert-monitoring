@@ -19,7 +19,7 @@ import httpx
 
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
-    ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, LOG_RAW_PAYLOAD,
+    ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, LOG_RAW_PAYLOAD,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES, log,
 )
 
@@ -68,6 +68,7 @@ class SentryEventHandler:
         )
         self._db.commit()
         self._lock = asyncio.Lock()
+        self._prompt_logged = False   # log the LLM prompt once, so you can inspect it
 
         # project id -> name cache (error webhooks only carry the numeric id)
         self._proj_cache: dict[str, str] = {}
@@ -330,9 +331,6 @@ class SentryEventHandler:
         Returns None unless ENABLE_LLM=true and an API key is set, so today this
         is a no-op. Uses httpx directly -> no extra dependency to install now.
         """
-        if not (ENABLE_LLM and ANTHROPIC_API_KEY):
-            return None
-
         prompt = (
             "You are a senior backend engineer triaging a Sentry error. "
             "Reply in at most 4 short lines, plain text:\n"
@@ -343,6 +341,13 @@ class SentryEventHandler:
             f"Culprit: {p.get('culprit')}\n"
             "Stack:\n" + "\n".join(p.get("frames") or [])
         )
+
+        # dump so you can see exactly what would be sent to the LLM,
+        log.info("LLM prompt preview (once):\n%s", prompt)
+
+        if not ENABLE_LLM:
+            return None
+
         try:
             r = await self._client.post(
                 "https://api.anthropic.com/v1/messages",
@@ -353,7 +358,7 @@ class SentryEventHandler:
                 },
                 json={
                     "model": ANTHROPIC_MODEL,
-                    "max_tokens": 300,
+                    "max_tokens": ANTHROPIC_MAX_TOKENS,
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=30,

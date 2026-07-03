@@ -82,9 +82,12 @@ SEND_WINDOWS = [60, 300]
 SPIKE_THRESHOLD = int(os.environ.get("SPIKE_THRESHOLD", "5"))
 
 # Future feature: ask an LLM for likely cause + fix. Off by default.
-ENABLE_LLM        = os.environ.get("ENABLE_LLM", "false").lower() == "true"
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-ANTHROPIC_MODEL   = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
+ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+# Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
+# actually generated). Too low truncates the cause/fix mid-sentence.
+ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
