@@ -21,7 +21,7 @@ import httpx
 from config import (
     CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
-    LLM_STACK_LIB_MAX, LOG_RAW_PAYLOAD,
+    LLM_STACK_LIB_MAX, LOG_RAW_PAYLOAD, LOG_LLM_PROMPT,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
     GITLAB_URL, GITLAB_TOKEN, GITLAB_REF, GITLAB_CONTEXT_LINES, GITLAB_PROJECTS, log,
 )
@@ -482,10 +482,35 @@ class SentryEventHandler:
             "author": commit.get("author_name"),
             "email": commit.get("author_email"),
             "sha": sha,
+            "sha_full": commit.get("id"),
             "subject": (msg.splitlines()[0] if msg else "")[:80],
             "date": (commit.get("committed_date") or "")[:10],
             "line": lineno,
         }
+
+    async def fetch_change(self, loc, sha_full):
+        """The diff of the file in the commit that last touched the crash line
+        (previous state -> current state). Returns unified-diff text or None."""
+        if not sha_full:
+            return None
+        proj_enc, path, _ = loc
+        sha_enc = urllib.parse.quote(str(sha_full), safe="")
+        try:
+            r = await self._gitlab.get(
+                f"/api/v4/projects/{proj_enc}/repository/commits/{sha_enc}/diff"
+            )
+            r.raise_for_status()
+            diffs = r.json()
+        except Exception as e:
+            log.warning("gitlab diff error commit=%s: %s", str(sha_full)[:8], e)
+            return None
+        for d in diffs if isinstance(diffs, list) else []:
+            if path in (d.get("new_path"), d.get("old_path")):
+                text = (d.get("diff") or "").strip()
+                if text:
+                    log.info("gitlab change ok commit=%s path=%s", str(sha_full)[:8], path)
+                    return text[:3000]
+        return None
 
     async def _resolve_path(self, proj_enc: str, frame: dict):
         """Convention paths first; fall back to a repo filename search (multi-module)."""
@@ -551,16 +576,20 @@ class SentryEventHandler:
         Returns None unless ENABLE_LLM=true and an API key is set, so today this
         is a no-op. Uses httpx directly -> no extra dependency to install now.
         """
-        # source window (reuses the file located in process()); only when the prompt
-        # is actually used: the one-time preview, or when the LLM is enabled
-        need = (not self._prompt_logged)
-        source = await self.fetch_source(p["_loc"]) if (need and p.get("_loc")) else None
+        # source window + the diff of the commit that last touched the crash line
+        # ("previous -> current state"), both reusing the file located in process()
+        loc = p.get("_loc")
+        blame = p.get("blame") or {}
+        source = await self.fetch_source(loc) if loc else None
+        change = await self.fetch_change(loc, blame.get("sha_full")) \
+            if (loc and blame.get("sha_full")) else None
 
         chain = "\n".join(f"{t}: {v}" for t, v in (p.get("exc_chain") or [])) \
             or f"{p.get('type')}: {p.get('value')}"
         stack = "\n".join(p.get("frames_full") or p.get("frames") or [])
         prompt = (
-            "You are a senior backend engineer triaging a Sentry error. "
+            "You are a senior backend engineer triaging a Sentry error. Use the recent "
+            "change diff to judge whether it introduced the bug. "
             "Reply in at most 4 short lines, plain text:\n"
             "Likely cause: <one sentence>\n"
             "Suggested fix: <one or two sentences>\n\n"
@@ -570,12 +599,18 @@ class SentryEventHandler:
             f"Stack (crash site first):\n{stack}"
         )
         if source:
-            prompt += f"\n\nSource around the crash site (from GitLab):\n{source}"
+            prompt += f"\n\nCurrent source around the crash site (from GitLab):\n{source}"
+        if change:
+            prompt += (
+                f"\n\nMost recent change to this file "
+                f"(commit {blame.get('sha')} by {blame.get('author')} on {blame.get('date')} — "
+                f"\"{blame.get('subject')}\") — previous vs current (diff):\n{change}"
+            )
 
-        # dump the prompt once so you can inspect it (even while ENABLE_LLM is off)
-        log.info("LLM prompt preview (once):\n%s", prompt)
+        # dump the prompt so you can inspect it (even while ENABLE_LLM is off)
+        log.info("LLM prompt preview:\n%s", prompt)
 
-        if not ENABLE_LLM:
+        if not (ENABLE_LLM and ANTHROPIC_API_KEY):
             return None
 
         try:
@@ -633,6 +668,12 @@ class SentryEventHandler:
             if not send:
                 log.info("debounced issue=%s (24h/30m/5m=%s/%s/%s)",
                          p["issue_id"], p["c24h"], p["c30m"], p["c5m"])
+                # debug: build + log the prompt for debounced events too
+                if LOG_LLM_PROMPT:
+                    p["_loc"] = await self.locate_source(p)
+                    if p["_loc"]:
+                        p["blame"] = await self.fetch_blame(p["_loc"])
+                    await self.analyze(p)     # logs the prompt; returns None while LLM off
                 return
             p["status"] = status
             # numeric project id -> name (None falls back to "sentry" in the header)

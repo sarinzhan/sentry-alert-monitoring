@@ -60,6 +60,10 @@ GITLAB_URL   = os.environ.get("GITLAB_URL", "").rstrip("/")
 GITLAB_TOKEN = os.environ.get("GITLAB_TOKEN", "").strip()
 GITLAB_REF   = os.environ.get("GITLAB_REF") or os.environ.get("GITLAB_DEFAULT_REF", "main")
 GITLAB_CONTEXT_LINES = int(os.environ.get("GITLAB_CONTEXT_LINES", "25"))
+# Debug: build and log the LLM prompt for EVERY event, including debounced ones
+# (normally the prompt is only built for events we actually send). Verbose + makes
+# GitLab calls per event — turn off after debugging.
+LOG_LLM_PROMPT = os.environ.get("LOG_LLM_PROMPT", "false").lower() == "true"
 # accept either name (GITLAB_PROJECTS or the older PROJECT_REPOS)
 GITLAB_PROJECTS = {}
 for _pair in (os.environ.get("GITLAB_PROJECTS") or os.environ.get("PROJECT_REPOS", "")).split(","):
