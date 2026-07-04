@@ -17,9 +17,23 @@ from telegram.request import HTTPXRequest
 
 from config import (
     CHAT_ID, CHAT_THREAD_ID, TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE,
-    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, STAT_WINDOWS, log,
+    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, STAT_WINDOWS, params_summary, log,
 )
 from utils import esc
+
+
+HELP_TEXT = (
+    "<b>Команды</b>\n"
+    "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт, мьют)\n"
+    "<code>/mute &lt;id&gt; &lt;дней&gt;</code> — отсрочить ошибку (макс "
+    f"{MUTE_MAX_DAYS} дн.); или ответом на алерт: <code>/mute &lt;дней&gt;</code>\n"
+    "<code>/mute_project &lt;проект&gt; &lt;дней&gt;</code> — отключить проект (макс "
+    f"{PROJECT_MUTE_MAX_DAYS} дн.)\n"
+    "<code>/watch add &lt;текст&gt; [проект]</code> — всегда слать при совпадении текста\n"
+    "<code>/watch del &lt;текст&gt; [проект]</code> · <code>/watch list</code>\n"
+    "<code>/params</code> — текущие значения параметров\n"
+    "<b>id</b> — короткий код <code>#abcdef</code> из строки 2 алерта."
+)
 
 
 def _fmt_ts(ts):
@@ -78,6 +92,8 @@ class ChatBotHandler:
         """Wire the /status /mute /mute_project /watch commands to the data layer.
         Called from the controller after the SentryEventHandler exists."""
         self._sentry = sentry
+        self.app.add_handler(CommandHandler("help", self.on_help))
+        self.app.add_handler(CommandHandler("params", self.on_params))
         self.app.add_handler(CommandHandler("status", self.on_status))
         self.app.add_handler(CommandHandler("mute", self.on_mute))
         self.app.add_handler(CommandHandler("mute_project", self.on_mute_project))
@@ -168,6 +184,12 @@ class ChatBotHandler:
             await update.effective_message.reply_html(html, disable_web_page_preview=True)
         except TelegramError as e:
             log.error("command reply failed: %s", e)
+
+    async def on_help(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        await self._reply(update, HELP_TEXT)
+
+    async def on_params(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        await self._reply(update, "<b>Параметры</b>\n<pre>" + esc(params_summary()) + "</pre>")
 
     async def on_status(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:

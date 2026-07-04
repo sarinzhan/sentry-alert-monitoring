@@ -37,6 +37,17 @@ from utils import esc
 STATUS_EMOJI = {"new": "🆕", "ongoing": "🔁", "escalating": "🚨"}
 
 
+def _win_label(sec):
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if sec % n == 0:
+            return f"{sec // n}{unit}"
+    return f"{sec}s"
+
+
+# e.g. "24h/12h/10m" — the period labels shown next to the line-2 counts
+STAT_LABELS = "/".join(_win_label(w) for w in STAT_WINDOWS)
+
+
 # Sentry issue lifecycle actions we treat as "an error is happening".
 # None covers alert-rule / error payloads that have no 'action' field.
 NOTIFY_ACTIONS = {None, "created", "triggered"}
@@ -597,8 +608,9 @@ class SentryEventHandler:
 
         # line 1: <emoji> project · env · status
         lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
-        # line 2: <blame author> · <commit date> · counts · #<short id for /mute,/status>
-        counts = "/".join(esc(c) for c in (p.get("counts") or []))
+        # line 2: <blame author> · <commit date-time> · counts (periods) · #<short>
+        nums = "/".join(esc(c) for c in (p.get("counts") or []))
+        counts = f"{nums} ({STAT_LABELS})" if nums else ""
         b = p.get("blame") or {}
         author = f"{esc(b['author'])} · {esc(b.get('date') or '?')}" if b.get("author") else ""
         short = f"<code>#{esc(p.get('short'))}</code>" if p.get("short") else ""
@@ -631,6 +643,11 @@ class SentryEventHandler:
 
         if p.get("url"):
             lines += ["", f'<a href="{esc(p["url"])}">Open in Sentry →</a>']
+
+        # copyable quick commands (tap to copy on mobile)
+        if p.get("short"):
+            s = esc(p["short"])
+            lines.append(f"<code>/status {s}</code>   <code>/mute {s} 1</code>")
 
         # bottom: LLM API cost, or "cached" (with what it saved) on a cache hit
         m = p.get("llm_meta")
@@ -744,7 +761,8 @@ class SentryEventHandler:
             "sha": sha,
             "sha_full": commit.get("id"),
             "subject": (msg.splitlines()[0] if msg else "")[:80],
-            "date": (commit.get("committed_date") or "")[:10],
+            # "2025-07-18T15:52:33+06:00" -> "2025-07-18 15:52"
+            "date": (commit.get("committed_date") or "")[:16].replace("T", " "),
             "line": lineno,
         }
 

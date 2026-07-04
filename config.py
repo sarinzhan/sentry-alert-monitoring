@@ -129,9 +129,9 @@ def _dur(x):
     except ValueError:
         return None
 
-STAT_WINDOWS = [d for d in (_dur(x) for x in os.environ.get("STAT_WINDOWS", "24h,30m,5m").split(",")) if d]
+STAT_WINDOWS = [d for d in (_dur(x) for x in os.environ.get("STAT_WINDOWS", "24h,12h,10m").split(",")) if d]
 if len(STAT_WINDOWS) != 3:
-    STAT_WINDOWS = [86400, 1800, 300]
+    STAT_WINDOWS = [86400, 43200, 600]
 
 # Future feature: ask an LLM for likely cause + fix. Off by default.
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
@@ -201,3 +201,20 @@ def banner():
         "=" * 64,
     ]
     return "\n".join(lines)
+
+
+def params_summary():
+    """Operational parameters (no secrets) for the /params chat command."""
+    return "\n".join([
+        "ongoing (min gap):        %gh" % WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR,
+        "critical window:          %gm" % WINDOW_CRITICAL_INTERVAL_IN_MINUTE,
+        "critical error threshold: >%d" % CRITICAL_ERROR_THRESHOLD,
+        "affected user threshold:  >=%d" % AFFECTED_USER_THRESHOLD,
+        "critical rate limit:      1 / %gh" % WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR,
+        "stat windows (line 2):    %s sec" % ",".join(str(w) for w in STAT_WINDOWS),
+        "mute max:                 issue %dd · project %dd" % (MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS),
+        "keyword min interval:     %ds" % KEYWORD_MIN_INTERVAL_SEC,
+        "llm:                      enabled=%s model=%s max_tokens=%d" % (
+            ENABLE_LLM, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS),
+        "gitlab source:            %s" % ("on" if (GITLAB_URL and GITLAB_TOKEN and GITLAB_PROJECTS) else "off"),
+    ])

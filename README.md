@@ -1,149 +1,148 @@
 # sentry-telegram
 
-Receives a Sentry webhook and posts the error to a Telegram chat.
-Per-issue debounce (send now → ≥1 min → every 5 min) so a spiking error can't flood the channel.
-State is in SQLite, so the debounce survives restarts.
+Receives Sentry webhooks and posts errors to a Telegram chat/forum topic, with an
+intentional trigger model (new / ongoing / critical), interactive control from the chat
+(mute, per-project mute, keyword force-send), and an optional LLM cause/fix enriched with
+the real source, author (git blame) and the diff that last touched the crash line.
+All state is in SQLite, so everything survives restarts.
 
-Send `/start` to the bot in any chat (or forum topic) and it replies with the
-chat id (and topic `message_thread_id`) to put in `TELEGRAM_CHAT_ID`.
+Send `/start` to the bot in the target chat/topic and it replies with the
+`chat id` (and `message_thread_id`) to put in `TELEGRAM_CHAT_ID` (use `chatid:thread`).
 
 ## Layout
 
 | File | Responsibility |
 |---|---|
-| `config.py` | `.env` loading, settings, logging |
+| `config.py` | `.env` loading, settings, startup `banner()` / `params_summary()` |
 | `utils.py` | shared helpers (`esc`) |
-| `chat_bot_handler.py` | `ChatBotHandler` — python-telegram-bot app, `/start`, sending |
-| `sentry_event_handler.py` | `SentryEventHandler` — verify, parse, debounce, format, LLM |
-| `controller.py` | FastAPI app: endpoints + lifespan wiring the two handlers |
+| `chat_bot_handler.py` | Telegram app: sending + commands (`/start /help /params /status /mute /mute_project /watch`) |
+| `sentry_event_handler.py` | verify, parse, trigger decision, mutes/keywords, format, GitLab, LLM |
+| `controller.py` | FastAPI app: endpoints + lifespan wiring |
 | `main.py` | entry point |
 
-## Run on a server
+## Alert triggers
 
-```bash
-pip install -r requirements.txt
-cp .env.example .env        # then edit it
-python main.py
+The debounce/spike model was replaced by an ops-driven one. An issue produces an alert when **any** of:
+
+- **🆕 new** — the first time the issue is seen.
+- **🔁 ongoing** — at least `WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR` (12h) since the last alert for it.
+- **🚨 escalating (critical)** — within `WINDOW_CRITICAL_INTERVAL_IN_MINUTE` (10m) either the
+  occurrence count `> CRITICAL_ERROR_THRESHOLD` (15) **or** distinct affected users
+  `>= AFFECTED_USER_THRESHOLD` (5); rate-limited to once per `WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR` (4h).
+
+Precedence: new > critical > ongoing. Affected-user counting needs a user in the event
+(`user.ip_address`/`id`/… or the `user` tag). LLM analysis runs **only for escalating alerts in prod**.
+
+## Message format
+
+```
+🚨 billing · prod · escalating
+uMelis · 2025-07-18 15:52 · 2343/43/22 · #a1b2c3
+
+🤖 Likely cause: …
+Suggested fix: …
+
+ProductAlreadyConnectedException: Product already connected
+Culprit: …SubscriptionServiceImpl in addSubscriptionProduct
+level error
+SubscriptionServiceImpl.java:519 …
+Open in Sentry →
+/status a1b2c3   /mute a1b2c3 1
+💰 LLM: $0.0087 · 1423 in / 198 out
 ```
 
-That starts the listener on `0.0.0.0:8080`. Endpoints: `POST /webhook` (Sentry),
-`POST /telegram` (Telegram webhook, alternative to polling), and `GET /health`.
-Put it behind your reverse proxy / TLS as usual.
+Line 2 = **blame author · commit date-time · counts · `#short`**. The `#short` is a stable
+6-hex id for the issue (used by the commands). The `/status` and `/mute` lines are copyable.
+
+## Commands (in the chat)
+
+Sent in the alert chat/topic. The bot polls, so plain commands and replies to alerts work
+under Telegram's default privacy mode (no BotFather change).
+
+| Command | What |
+|---|---|
+| `/help` | list commands |
+| `/params` | current parameter values |
+| `/status <id>` | issue state: counts, last alert, mute |
+| `/mute <id> <days>` | snooze an issue (max `MUTE_MAX_DAYS`=7). Or **reply to an alert** with `/mute <days>` |
+| `/mute_project <project> <days>` | mute a whole project (max `PROJECT_MUTE_MAX_DAYS`=15) |
+| `/watch add <text> [project]` | always send when an alert text contains `<text>` (global or per-project) |
+| `/watch del <text> [project]` · `/watch list` | manage keywords |
+
+`<id>` is the `#short` from line 2. Keyword force-send bypasses debounce and mutes
+(set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam floor).
+
+## LLM cause/fix + GitLab (optional)
+
+When `ENABLE_LLM=true`, escalating prod alerts get a `🤖 cause / fix` from Anthropic. The
+prompt is enriched via the Sentry issue's `project_id` → GitLab repo mapping:
+current **source** around the crash line, the **author** (git blame), and the **diff** of the
+commit that last touched that line. Answers are cached per issue+commit in SQLite (shown as
+`💰 cached`) and re-computed only when the code changes. The Anthropic call reuses the same
+MITM-tolerant TLS as Telegram (`ANTHROPIC_SSL_INSECURE` / `ANTHROPIC_CA_BUNDLE`).
 
 ## Configure (`.env`)
 
-| Variable | Required | What |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | yes | from @BotFather |
-| `TELEGRAM_CHAT_ID` | yes | target chat/channel id (negative for groups/channels) |
-| `SENTRY_CLIENT_SECRET` | recommended | Internal Integration Client Secret; verifies the request. Empty = check off |
-| `HOST` / `PORT` | no | default `0.0.0.0` / `8080` |
-| `DB_PATH` | no | default `state.db` |
-| `TELEGRAM_CA_BUNDLE` | no | PEM CA bundle to trust for `api.telegram.org` (see TLS below) |
-| `TELEGRAM_SSL_INSECURE` | no | `true` skips TLS verification (last resort); default `false` |
+Copy `.env.example` and fill in. Highlights (see `.env.example` for the full list):
 
-Getting `TELEGRAM_CHAT_ID`: add the bot to the chat, send any message, then open
-`https://api.telegram.org/bot<TOKEN>/getUpdates` and read the `chat.id`.
+| Variable | What |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | bot token; `chatid:thread` target |
+| `SENTRY_CLIENT_SECRET` | Internal Integration secret (verifies the webhook; empty = off) |
+| `STAT_WINDOWS` | the 3 count windows on line 2 (durations `s/m/h/d`) |
+| `WINDOW_*` / `*_THRESHOLD` | the trigger model (see above) |
+| `MUTE_MAX_DAYS` / `PROJECT_MUTE_MAX_DAYS` | mute limits |
+| `SENTRY_PROJECTS` | project id → display name for the header |
+| `GITLAB_URL` / `GITLAB_TOKEN` / `GITLAB_PROJECTS` | GitLab source/blame lookup |
+| `ENABLE_LLM` / `ANTHROPIC_*` | LLM cause/fix |
+| `TELEGRAM_CA_BUNDLE` / `TELEGRAM_SSL_INSECURE` | Telegram TLS behind a proxy |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | corporate proxy (runtime) |
+
+## Run (Docker, recommended)
+
+```bash
+docker compose up -d --build
+docker compose logs -f sentry-telegram    # startup banner shows the effective config
+```
+
+Secrets come from `.env` next to `docker-compose.yml` (gitignored). The service joins the
+Sentry stack's docker network, reachable as `http://sentry-telegram:8080`.
+
+### Or directly
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env      # then edit it
+python main.py            # 0.0.0.0:8080 : POST /webhook, POST /telegram, GET /health
+```
 
 ## TLS behind a corporate proxy
 
-If the box reaches `api.telegram.org` through an intercepting HTTPS proxy (common on
-corporate networks — httpx picks the proxy up from `HTTPS_PROXY`/`https_proxy`), startup
-can fail with:
-
-```
-[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Missing Authority Key Identifier
-```
-
-The proxy presents a certificate signed by an internal CA, and modern OpenSSL rejects it.
-The bot builds its own SSL context to handle this:
-
-- it trusts the system/certifi store **plus** `TELEGRAM_CA_BUNDLE` if set — point that at
-  the corporate CA (PEM) so the proxy cert verifies, and
-- it relaxes the strict X.509 check that flags a CA cert with no Authority Key Identifier
-  (the cause of the error above).
-
-Preferred fix: `TELEGRAM_CA_BUNDLE=/etc/ssl/certs/corporate-ca.pem`. As a last resort when
-you can't obtain a clean CA cert, set `TELEGRAM_SSL_INSECURE=true` to skip verification.
+If the box reaches `api.telegram.org` / `api.anthropic.com` through an intercepting HTTPS
+proxy, TLS fails with `CERTIFICATE_VERIFY_FAILED` (self-signed / missing Authority Key
+Identifier). The bot builds its own SSL context: it trusts the system store plus an optional
+corporate CA (`TELEGRAM_CA_BUNDLE` / `ANTHROPIC_CA_BUNDLE`) and relaxes the strict X.509
+check. Last resort: `TELEGRAM_SSL_INSECURE=true` (and `ANTHROPIC_SSL_INSECURE`, which
+defaults to the Telegram setting). Internal calls (Sentry API, GitLab) use a proxy-bypassing
+client, so add their hosts to `NO_PROXY` on the Sentry stack when it forwards the webhook.
 
 ## Wire up Sentry
 
-In Sentry: **Settings → Developer Settings → Internal Integration**. Set the webhook URL to
-`https://your-host/webhook`, copy the **Client Secret** into `SENTRY_CLIENT_SECRET`, and
-subscribe to one of:
+**Settings → Developer Settings → Custom (Internal) Integration**. Webhook URL
+`http://sentry-telegram.local:8080/webhook` (a dotted alias — Sentry's URL validator rejects
+single-label hosts), copy the **Client Secret** into `SENTRY_CLIENT_SECRET`, and subscribe to:
 
-- **`issue`** — fires on new issue / regression. Lower volume, but the payload has **no
-  stack trace** (you get title, culprit, type, message, link).
-- **`error`** — fires per event, so the payload **includes the stack trace** (richer
-  message). Higher webhook volume, but the debounce collapses it to your
-  now / ≥1 min / every 5 min schedule per issue.
+- **`error`** — per event, payload **includes the stack trace** (what this tool is built for).
+- **`issue`** — lower volume, no stack trace.
 
-The script handles both shapes automatically — pick based on whether you want stack
-frames in the message.
+Sentry blocks webhooks to private IPs (SSRF); for a self-hosted stack on the docker network,
+remove the docker subnet (`172.16.0.0/12` and its IPv6 twin) from `SENTRY_DISALLOWED_IPS` in
+`sentry.conf.py`, and add the notifier host to the sender's `NO_PROXY`.
 
-Every `POST /webhook` call is logged on arrival (`/webhook called: resource=... bytes=...
-from=...`), with a warning on a rejected signature or unparseable body — handy for
-confirming Sentry is actually reaching the listener.
-
-## How the debounce works
-
-The first time an issue is seen → send immediately. After that, a send only happens when a
-webhook actually arrives **and** enough time has passed since the last send for that issue:
-
-```
-SEND_WINDOWS = [60, 300]   # gap before 2nd send, then before every later send
-```
-
-So per issue: now, then ≥60s later, then ≥300s apart. Anything in between is dropped.
-Change `SEND_WINDOWS` in `config.py` to retune. The key is the Sentry issue id, so each
-issue is throttled independently.
+Every `POST /webhook` is logged on arrival, with a warning on bad signature / bad JSON.
 
 ## Run as a service (systemd)
 
-```bash
-# 1. copy the project and config into place
-sudo mkdir -p /opt/sentry-telegram
-sudo cp *.py requirements.txt .env /opt/sentry-telegram/
-
-# 2. create a venv and install deps
-cd /opt/sentry-telegram
-sudo python3 -m venv venv
-sudo ./venv/bin/pip install -r requirements.txt
-
-# 3. create an unprivileged user and hand it the directory
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin sentry-telegram
-sudo chown -R sentry-telegram:sentry-telegram /opt/sentry-telegram
-
-# 4. install and start the unit
-sudo cp sentry-telegram.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now sentry-telegram
-```
-
-Check it:
-
-```bash
-systemctl status sentry-telegram
-journalctl -u sentry-telegram -f      # follow logs
-```
-
-The unit (`sentry-telegram.service`) runs `venv/bin/python main.py` from
-`/opt/sentry-telegram`, restarts on failure, and is locked down (non-root,
-`ProtectSystem=strict`); `state.db` stays writable via `ReadWritePaths`.
-If you change paths or the username, edit the unit to match.
-
-## Future: LLM cause + fix
-
-Already stubbed in `analyze()` and off by default. It calls the Anthropic API over `httpx`
-(no extra dependency to add). To turn on later, set in `.env`:
-
-```
-ENABLE_LLM=true
-ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-sonnet-4-6
-```
-
-When on, a short "🤖 likely cause / suggested fix" section is added to the message.
-Note: it runs before the send, so it adds a moment of latency — if you'd rather keep the
-alert instant, the cleanest change is to send the main message first and post the analysis
-as a follow-up reply.
+`sentry-telegram.service` runs `venv/bin/python main.py`, restarts on failure, runs
+non-root under `ProtectSystem=strict` with `state.db` writable via `ReadWritePaths`. Adjust
+paths/user to match your install.
