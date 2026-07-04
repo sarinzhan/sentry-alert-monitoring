@@ -115,23 +115,20 @@ PROJECT_MUTE_MAX_DAYS = int(os.environ.get("PROJECT_MUTE_MAX_DAYS", "15"))
 # ("во всех случаях"); set >0 seconds as an anti-spam floor between forced sends per issue.
 KEYWORD_MIN_INTERVAL_SEC = int(os.environ.get("KEYWORD_MIN_INTERVAL_SEC", "0"))
 
-# The three occurrence-count windows shown on line 2 of the message (e.g. 437/15/6).
-# Durations: suffix s/m/h/d, bare number = seconds. Default 24h / 30m / 5m.
-def _dur(x):
-    x = x.strip().lower()
-    if not x:
-        return None
-    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(x[-1], 1)
-    if x[-1] in "smhd":
-        x = x[:-1]
-    try:
-        return int(float(x) * mult)
-    except ValueError:
-        return None
-
-STAT_WINDOWS = [d for d in (_dur(x) for x in os.environ.get("STAT_WINDOWS", "24h,12h,10m").split(",")) if d]
+# The three occurrence-count windows shown on line 2 of the message (e.g. 2343/43/22),
+# specified in MINUTES. Default "720,360,10" = 12h / 6h / 10m. Stored as seconds.
+STAT_WINDOWS = [int(x) * 60 for x in os.environ.get("STAT_WINDOWS", "720,360,10").split(",")
+                if x.strip().isdigit()]
 if len(STAT_WINDOWS) != 3:
-    STAT_WINDOWS = [86400, 43200, 600]
+    STAT_WINDOWS = [720 * 60, 360 * 60, 10 * 60]
+
+
+def _wlabel(sec):
+    """Seconds -> compact h/m label for the message and /params."""
+    for unit, n in (("h", 3600), ("m", 60)):
+        if sec % n == 0:
+            return f"{sec // n}{unit}"
+    return f"{sec}s"
 
 # Future feature: ask an LLM for likely cause + fix. Off by default.
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
@@ -189,7 +186,7 @@ def banner():
         f"in {WINDOW_CRITICAL_INTERVAL_IN_MINUTE}m, max 1/{WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR}h",
         f"  mute limits       issue<={MUTE_MAX_DAYS}d project<={PROJECT_MUTE_MAX_DAYS}d "
         f"kw_min_interval={KEYWORD_MIN_INTERVAL_SEC}s",
-        f"  stat windows      {STAT_WINDOWS} (seconds)",
+        f"  stat windows      {'/'.join(_wlabel(w) for w in STAT_WINDOWS)}",
         f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
         f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
         f"  llm tls           insecure={ANTHROPIC_SSL_INSECURE} ca={ANTHROPIC_CA_BUNDLE or '-'}",
@@ -211,7 +208,7 @@ def params_summary():
         "critical error threshold: >%d" % CRITICAL_ERROR_THRESHOLD,
         "affected user threshold:  >=%d" % AFFECTED_USER_THRESHOLD,
         "critical rate limit:      1 / %gh" % WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR,
-        "stat windows (line 2):    %s sec" % ",".join(str(w) for w in STAT_WINDOWS),
+        "stat windows (line 2):    %s" % "/".join(_wlabel(w) for w in STAT_WINDOWS),
         "mute max:                 issue %dd · project %dd" % (MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS),
         "keyword min interval:     %ds" % KEYWORD_MIN_INTERVAL_SEC,
         "llm:                      enabled=%s model=%s max_tokens=%d" % (
