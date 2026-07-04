@@ -127,6 +127,11 @@ class SentryEventHandler:
             " project TEXT, by TEXT, at REAL NOT NULL)"
         )
         self._db.execute("CREATE INDEX IF NOT EXISTS ix_keyword_proj ON keyword(project)")
+        # vcs author name -> telegram handle (to @mention the culprit in the alert)
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS user_map ("
+            " vcs TEXT PRIMARY KEY, telegram TEXT NOT NULL, by TEXT, at REAL NOT NULL)"
+        )
         # cached LLM analysis per issue, keyed also by the crash-line commit so it
         # invalidates when the code changes. Persisted so it survives restarts.
         self._db.execute(
@@ -415,6 +420,66 @@ class SentryEventHandler:
             "SELECT text, project FROM keyword ORDER BY project IS NULL DESC, project, text"
         ).fetchall()
 
+    # --- muted issues / projects (list + unmute) ---
+    def list_muted_issues(self, now=None):
+        now = now or time.time()
+        return self._db.execute(
+            "SELECT m.issue_id, i.short, i.title, m.until, m.by FROM issue_mute m "
+            "LEFT JOIN issue_state i ON i.issue_id=m.issue_id "
+            "WHERE m.until > ? ORDER BY m.until", (now,)).fetchall()
+
+    def unmute_issue(self, ref):
+        info = self.resolve_ref(ref)
+        if not info:
+            return None
+        self._db.execute("DELETE FROM issue_mute WHERE issue_id=?", (info["issue_id"],))
+        self._db.commit()
+        return info
+
+    def list_project_mutes(self, now=None):
+        now = now or time.time()
+        return self._db.execute(
+            "SELECT project, until, by FROM project_mute WHERE until > ? ORDER BY until", (now,)
+        ).fetchall()
+
+    def unmute_project(self, project):
+        cur = self._db.execute("DELETE FROM project_mute WHERE project=?", (str(project).strip(),))
+        self._db.commit()
+        return cur.rowcount
+
+    def projects_overview(self, now=None):
+        """Known projects (from config) + their mute state."""
+        muted = {row[0]: row[1] for row in self.list_project_mutes(now)}
+        ids = set(PROJECT_NAMES) | set(GITLAB_PROJECTS) | set(muted)
+        return [{"id": pid, "name": PROJECT_NAMES.get(pid), "repo": GITLAB_PROJECTS.get(pid),
+                 "muted_until": muted.get(pid)} for pid in sorted(ids, key=str)]
+
+    # --- vcs author -> telegram handle ---
+    def map_add(self, vcs, telegram, by):
+        vcs = (vcs or "").strip().lower()
+        telegram = (telegram or "").strip().lstrip("@")
+        if not vcs or not telegram:
+            return False
+        self._db.execute("INSERT OR REPLACE INTO user_map(vcs, telegram, by, at) VALUES (?, ?, ?, ?)",
+                         (vcs, telegram, by, time.time()))
+        self._db.commit()
+        return True
+
+    def map_del(self, vcs):
+        cur = self._db.execute("DELETE FROM user_map WHERE vcs=?", ((vcs or "").strip().lower(),))
+        self._db.commit()
+        return cur.rowcount
+
+    def map_list(self):
+        return self._db.execute("SELECT vcs, telegram FROM user_map ORDER BY vcs").fetchall()
+
+    def map_lookup(self, author):
+        if not author:
+            return None
+        row = self._db.execute("SELECT telegram FROM user_map WHERE vcs=?",
+                               (author.strip().lower(),)).fetchone()
+        return row[0] if row else None
+
     async def aclose(self):
         if self._api is not None:
             await self._api.aclose()
@@ -608,11 +673,12 @@ class SentryEventHandler:
 
         # line 1: <emoji> project · env · status
         lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
-        # line 2: <blame author> · <commit date-time> · counts (periods) · #<short>
+        # line 2: <@telegram or vcs author> · <commit date-time> · counts (periods) · #<short>
         nums = "/".join(esc(c) for c in (p.get("counts") or []))
         counts = f"{nums} ({STAT_LABELS})" if nums else ""
         b = p.get("blame") or {}
-        author = f"{esc(b['author'])} · {esc(b.get('date') or '?')}" if b.get("author") else ""
+        who = f"@{esc(b['tg'])}" if b.get("tg") else (esc(b["author"]) if b.get("author") else "")
+        author = f"{who} · {esc(b.get('date') or '?')}" if who else ""
         short = f"<code>#{esc(p.get('short'))}</code>" if p.get("short") else ""
         lines.append(" · ".join(x for x in (author, counts, short) if x))
         lines.append("")
@@ -991,6 +1057,8 @@ class SentryEventHandler:
             p["_loc"] = await self.locate_source(p)
             if p["_loc"]:
                 p["blame"] = await self.fetch_blame(p["_loc"])
+                if p.get("blame"):                            # map vcs author -> @telegram
+                    p["blame"]["tg"] = self.map_lookup(p["blame"].get("author"))
             # LLM cause/fix only for escalating alerts in prod
             is_prod = (p.get("environment") or "").lower() == "prod"
             analysis = await self.analyze(p) if (status == "escalating" and is_prod) else None

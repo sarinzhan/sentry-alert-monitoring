@@ -27,10 +27,12 @@ HELP_TEXT = (
     "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт, мьют)\n"
     "<code>/mute &lt;id&gt; &lt;дней&gt;</code> — отсрочить ошибку (макс "
     f"{MUTE_MAX_DAYS} дн.); или ответом на алерт: <code>/mute &lt;дней&gt;</code>\n"
+    "<code>/unmute &lt;id&gt;</code> · <code>/muted</code> — снять мьют · список замьюченных\n"
     "<code>/mute_project &lt;проект&gt; &lt;дней&gt;</code> — отключить проект (макс "
     f"{PROJECT_MUTE_MAX_DAYS} дн.)\n"
-    "<code>/watch add &lt;текст&gt; [проект]</code> — всегда слать при совпадении текста\n"
-    "<code>/watch del &lt;текст&gt; [проект]</code> · <code>/watch list</code>\n"
+    "<code>/unmute_project &lt;проект&gt;</code> · <code>/projects</code> — снять · список проектов\n"
+    "<code>/watch add|del &lt;текст&gt; [проект]</code> · <code>/watched</code> — force-send по тексту\n"
+    "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code> · <code>/map del|list</code> — автор коммита → Telegram\n"
     "<code>/params</code> — текущие значения параметров\n"
     "<b>id</b> — короткий код <code>#abcdef</code> из строки 2 алерта."
 )
@@ -96,8 +98,14 @@ class ChatBotHandler:
         self.app.add_handler(CommandHandler("params", self.on_params))
         self.app.add_handler(CommandHandler("status", self.on_status))
         self.app.add_handler(CommandHandler("mute", self.on_mute))
+        self.app.add_handler(CommandHandler("unmute", self.on_unmute))
+        self.app.add_handler(CommandHandler("muted", self.on_muted))
         self.app.add_handler(CommandHandler("mute_project", self.on_mute_project))
+        self.app.add_handler(CommandHandler("unmute_project", self.on_unmute_project))
+        self.app.add_handler(CommandHandler("projects", self.on_projects))
         self.app.add_handler(CommandHandler("watch", self.on_watch))
+        self.app.add_handler(CommandHandler("watched", self.on_watched))
+        self.app.add_handler(CommandHandler("map", self.on_map))
 
     @property
     def bot(self):
@@ -236,6 +244,27 @@ class ChatBotHandler:
         await self._reply(update, f"Пользователь <b>{esc(by)}</b> отсрочил ошибку {link} "
                                   f"на {res['days']} дн. (до {_fmt_ts(res['until'])}).")
 
+    async def on_unmute(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not ctx.args:
+            return await self._reply(update, "Использование: <code>/unmute &lt;id&gt;</code>")
+        info = self._sentry.unmute_issue(ctx.args[0])
+        if not info:
+            return await self._reply(update, f"Ошибка <code>{esc(ctx.args[0])}</code> не найдена.")
+        await self._reply(update, f"Мьют снят с ошибки "
+                                  f"<code>#{esc(info['short'] or info['issue_id'])}</code>.")
+
+    async def on_muted(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        rows = self._sentry.list_muted_issues()
+        if not rows:
+            return await self._reply(update, "Замьюченных ошибок нет.")
+        lines = ["<b>Замьюченные ошибки:</b>"]
+        for issue_id, short, title, until, by in rows:
+            sid = esc(short or issue_id)
+            t = esc((title or "")[:60])
+            who = f" · {esc(by)}" if by else ""
+            lines.append(f"<code>#{sid}</code> {t} — до {_fmt_ts(until)}{who}")
+        await self._reply(update, "\n".join(lines))
+
     async def on_mute_project(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         by = update.effective_user.full_name if update.effective_user else "?"
         if len(ctx.args) < 2:
@@ -248,16 +277,68 @@ class ChatBotHandler:
                                   f"<b>{esc(res['project'])}</b> на {res['days']} дн. "
                                   f"(до {_fmt_ts(res['until'])}).")
 
+    async def on_unmute_project(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not ctx.args:
+            return await self._reply(update, "Использование: <code>/unmute_project &lt;проект&gt;</code>")
+        n = self._sentry.unmute_project(ctx.args[0])
+        await self._reply(update, "Мьют проекта снят." if n else "Такой мьют проекта не найден.")
+
+    async def on_projects(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        rows = self._sentry.projects_overview()
+        if not rows:
+            return await self._reply(update, "Проекты не сконфигурированы "
+                                             "(SENTRY_PROJECTS / GITLAB_PROJECTS).")
+        lines = ["<b>Проекты:</b>"]
+        for r in rows:
+            name = esc(r["name"] or "?")
+            repo = f" → <code>{esc(r['repo'])}</code>" if r["repo"] else ""
+            mute = f" · 🔕 до {_fmt_ts(r['muted_until'])}" if r["muted_until"] else ""
+            lines.append(f"<code>{esc(r['id'])}</code> {name}{repo}{mute}")
+        await self._reply(update, "\n".join(lines))
+
+    async def _list_keywords_reply(self, update):
+        rows = self._sentry.list_keywords()
+        if not rows:
+            return await self._reply(update, "Список ключевых слов пуст.")
+        body = "\n".join(f"• <code>{esc(t)}</code>" + (f" [{esc(pr)}]" if pr else " [все]")
+                         for t, pr in rows)
+        await self._reply(update, "<b>Ключевые слова (force-send):</b>\n" + body)
+
+    async def on_watched(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        await self._list_keywords_reply(update)
+
+    async def on_map(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        by = update.effective_user.full_name if update.effective_user else "?"
+        args = ctx.args
+        sub = args[0].lower() if args else "list"
+        if sub == "list":
+            rows = self._sentry.map_list()
+            if not rows:
+                return await self._reply(update, "Маппинг пуст. "
+                                                 "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code>")
+            body = "\n".join(f"• <code>{esc(v)}</code> → @{esc(tg)}" for v, tg in rows)
+            return await self._reply(update, "<b>VCS-автор → Telegram:</b>\n" + body)
+        if sub == "del" and len(args) >= 2:
+            n = self._sentry.map_del(args[1])
+            return await self._reply(update, "Удалено." if n else "Не найдено.")
+        if sub == "add" and len(args) >= 3:
+            vcs, tg = args[1], args[2]
+        elif len(args) >= 2 and sub not in ("add", "del"):
+            vcs, tg = args[0], args[1]
+        else:
+            return await self._reply(update, "Использование: "
+                                             "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code> · "
+                                             "<code>/map del &lt;vcs_author&gt;</code> · "
+                                             "<code>/map list</code>")
+        if self._sentry.map_add(vcs, tg, by):
+            return await self._reply(update, f"<code>{esc(vcs)}</code> → @{esc(tg.lstrip('@'))}")
+        await self._reply(update, "Неверные аргументы.")
+
     async def on_watch(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         by = update.effective_user.full_name if update.effective_user else "?"
         sub = ctx.args[0].lower() if ctx.args else ""
         if sub == "list":
-            rows = self._sentry.list_keywords()
-            if not rows:
-                return await self._reply(update, "Список ключевых слов пуст.")
-            body = "\n".join(f"• <code>{esc(t)}</code>" + (f" [{esc(pr)}]" if pr else " [все]")
-                             for t, pr in rows)
-            return await self._reply(update, "<b>Ключевые слова (force-send):</b>\n" + body)
+            return await self._list_keywords_reply(update)
         if sub in ("add", "del") and len(ctx.args) >= 2:
             text = ctx.args[1]
             project = ctx.args[2] if len(ctx.args) >= 3 else None

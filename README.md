@@ -61,16 +61,19 @@ under Telegram's default privacy mode (no BotFather change).
 
 | Command | What |
 |---|---|
-| `/help` | list commands |
-| `/params` | current parameter values |
+| `/help` · `/params` | list commands · current parameter values |
 | `/status <id>` | issue state: counts, last alert, mute |
 | `/mute <id> <days>` | snooze an issue (max `MUTE_MAX_DAYS`=7). Or **reply to an alert** with `/mute <days>` |
+| `/unmute <id>` · `/muted` | remove an issue mute · list muted issues |
 | `/mute_project <project> <days>` | mute a whole project (max `PROJECT_MUTE_MAX_DAYS`=15) |
-| `/watch add <text> [project]` | always send when an alert text contains `<text>` (global or per-project) |
-| `/watch del <text> [project]` · `/watch list` | manage keywords |
+| `/unmute_project <project>` · `/projects` | remove a project mute · list projects + mute state |
+| `/watch add\|del <text> [project]` · `/watched` | keyword force-send (global or per-project) |
+| `/map <vcs_author> @<tg>` · `/map del\|list` | map a commit author to a Telegram handle |
 
 `<id>` is the `#short` from line 2. Keyword force-send bypasses debounce and mutes
-(set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam floor).
+(set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam floor). When a `/map` entry matches the
+crash-line author (git blame), line 2 shows the mapped `@telegram` (pinged) instead of the
+VCS name.
 
 ## LLM cause/fix + GitLab (optional)
 
