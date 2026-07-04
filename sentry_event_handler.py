@@ -25,7 +25,7 @@ from config import (
     CRITICAL_ERROR_THRESHOLD, AFFECTED_USER_THRESHOLD,
     MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, KEYWORD_MIN_INTERVAL_SEC,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
-    ANTHROPIC_PRICE_IN, ANTHROPIC_PRICE_OUT,
+    ANTHROPIC_PRICE_IN, ANTHROPIC_PRICE_OUT, USD_KGS_RATE,
     ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE,
     LLM_STACK_LIB_MAX, LOG_RAW_PAYLOAD, LOG_LLM_PROMPT,
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
@@ -46,6 +46,11 @@ def _win_label(sec):
 
 # e.g. "24h/12h/10m" — the period labels shown next to the line-2 counts
 STAT_LABELS = "/".join(_win_label(w) for w in STAT_WINDOWS)
+
+
+def _money(usd):
+    """LLM cost in USD and Kyrgyz som, e.g. '$0.0087 · 0.78 сом'."""
+    return f"${usd:.4f} · {usd * USD_KGS_RATE:.2f} сом"
 
 
 # Sentry issue lifecycle actions we treat as "an error is happening".
@@ -513,7 +518,14 @@ class SentryEventHandler:
         if p.get("_loc"):
             p["blame"] = await self.fetch_blame(p["_loc"])
         analysis = await self.analyze(p)
-        return analysis or "Пустой ответ от LLM."
+        if not analysis:
+            return "Пустой ответ от LLM."
+        m = p.get("llm_meta") or {}
+        if m.get("cached"):
+            cost = f"💰 cached (~{_money(m['cost'])})" if m.get("cost") else "💰 cached"
+        else:
+            cost = f"💰 {_money(m.get('cost', 0))} · {m.get('in', 0)} in / {m.get('out', 0)} out"
+        return f"{analysis}\n<i>{cost}</i>"
 
     async def aclose(self):
         if self._api is not None:
@@ -753,15 +765,15 @@ class SentryEventHandler:
             s = esc(p["short"])
             lines.append(f"<code>/status {s}</code>  <code>/mute {s} 1</code>  <code>/ai {s}</code>")
 
-        # bottom: LLM API cost, or "cached" (with what it saved) on a cache hit
+        # bottom: LLM API cost (USD + som), or "cached" (with what it saved) on a hit
         m = p.get("llm_meta")
         if m:
             if m.get("cached"):
-                saved = f" (saved ~${m['cost']:.4f})" if m.get("cost") else ""
+                saved = f" (saved ~{_money(m['cost'])})" if m.get("cost") else ""
                 lines.append(f"<i>💰 LLM: cached{esc(saved)}</i>")
             else:
                 lines.append(
-                    f"<i>💰 LLM: ${m.get('cost', 0):.4f} · "
+                    f"<i>💰 LLM: {_money(m.get('cost', 0))} · "
                     f"{esc(m.get('in', 0))} in / {esc(m.get('out', 0))} out</i>"
                 )
 

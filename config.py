@@ -140,6 +140,8 @@ ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
 # Price per 1M tokens, for the cost line in the message. Defaults = Opus 4.8 ($5/$25).
 ANTHROPIC_PRICE_IN  = float(os.environ.get("ANTHROPIC_PRICE_IN", "5.0"))
 ANTHROPIC_PRICE_OUT = float(os.environ.get("ANTHROPIC_PRICE_OUT", "25.0"))
+# USD -> Kyrgyz som (KGS) rate, to also show the cost in сом. Update as needed.
+USD_KGS_RATE = float(os.environ.get("USD_KGS_RATE", "89.5"))
 # Stack sent to the LLM: keep the full in-app (project) trace, but at most this many
 # library frames (framework noise). All-lib crashes still show the top few for context.
 LLM_STACK_LIB_MAX = int(os.environ.get("LLM_STACK_LIB_MAX", "5"))
