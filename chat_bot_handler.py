@@ -25,6 +25,7 @@ from utils import esc
 HELP_TEXT = (
     "<b>Команды</b>\n"
     "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт, мьют)\n"
+    "<code>/ai &lt;id&gt;</code> — спросить AI: причина и фикс\n"
     "<code>/mute &lt;id&gt; &lt;дней&gt;</code> — отсрочить ошибку (макс "
     f"{MUTE_MAX_DAYS} дн.); или ответом на алерт: <code>/mute &lt;дней&gt;</code>\n"
     "<code>/unmute &lt;id&gt;</code> · <code>/muted</code> — снять мьют · список замьюченных\n"
@@ -97,6 +98,7 @@ class ChatBotHandler:
         self.app.add_handler(CommandHandler("help", self.on_help))
         self.app.add_handler(CommandHandler("params", self.on_params))
         self.app.add_handler(CommandHandler("status", self.on_status))
+        self.app.add_handler(CommandHandler("ai", self.on_ai))
         self.app.add_handler(CommandHandler("mute", self.on_mute))
         self.app.add_handler(CommandHandler("unmute", self.on_unmute))
         self.app.add_handler(CommandHandler("muted", self.on_muted))
@@ -243,6 +245,15 @@ class ChatBotHandler:
                 if res.get("url") else f"#{esc(res['short'])}")
         await self._reply(update, f"Пользователь <b>{esc(by)}</b> отсрочил ошибку {link} "
                                   f"на {res['days']} дн. (до {_fmt_ts(res['until'])}).")
+
+    async def on_ai(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not ctx.args:
+            return await self._reply(update, "Использование: <code>/ai &lt;id&gt;</code>")
+        await self._reply(update, "🤖 анализирую…")
+        res = await self._sentry.analyze_ref(ctx.args[0])
+        if res is None:
+            return await self._reply(update, f"Ошибка <code>{esc(ctx.args[0])}</code> не найдена.")
+        await self._reply(update, res)
 
     async def on_unmute(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:

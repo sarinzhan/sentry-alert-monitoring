@@ -132,6 +132,11 @@ class SentryEventHandler:
             "CREATE TABLE IF NOT EXISTS user_map ("
             " vcs TEXT PRIMARY KEY, telegram TEXT NOT NULL, by TEXT, at REAL NOT NULL)"
         )
+        # last parsed context per issue, so /ai can re-run the LLM on demand
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS issue_ctx ("
+            " issue_id TEXT PRIMARY KEY, ctx TEXT NOT NULL, at REAL NOT NULL)"
+        )
         # cached LLM analysis per issue, keyed also by the crash-line commit so it
         # invalidates when the code changes. Persisted so it survives restarts.
         self._db.execute(
@@ -480,6 +485,36 @@ class SentryEventHandler:
                                (author.strip().lower(),)).fetchone()
         return row[0] if row else None
 
+    # --- on-demand LLM (/ai) ---
+    _CTX_KEYS = ("issue_id", "project_id", "project", "title", "culprit", "environment",
+                 "type", "value", "exc_chain", "frames_full", "frames_struct", "url", "short")
+
+    def store_ctx(self, p):
+        """Persist the parsed context so /ai can rebuild the prompt later."""
+        keep = {k: p.get(k) for k in self._CTX_KEYS}
+        self._db.execute("INSERT OR REPLACE INTO issue_ctx(issue_id, ctx, at) VALUES (?, ?, ?)",
+                         (p["issue_id"], json.dumps(keep, default=str), time.time()))
+        self._db.commit()
+
+    async def analyze_ref(self, ref):
+        """Run (or reuse cached) LLM analysis for an issue by id, on demand.
+        Returns the analysis text, or a status string, or None if the id is unknown."""
+        info = self.resolve_ref(ref)
+        if not info:
+            return None
+        row = self._db.execute("SELECT ctx FROM issue_ctx WHERE issue_id=?",
+                               (info["issue_id"],)).fetchone()
+        if not row:
+            return "Нет контекста для анализа — ошибка не приходила после запуска бота."
+        if self._llm is None:
+            return "LLM выключен (ENABLE_LLM=false)."
+        p = json.loads(row[0])
+        p["_loc"] = await self.locate_source(p)
+        if p.get("_loc"):
+            p["blame"] = await self.fetch_blame(p["_loc"])
+        analysis = await self.analyze(p)
+        return analysis or "Пустой ответ от LLM."
+
     async def aclose(self):
         if self._api is not None:
             await self._api.aclose()
@@ -681,6 +716,9 @@ class SentryEventHandler:
         author = f"{who} · {esc(b.get('date') or '?')}" if who else ""
         short = f"<code>#{esc(p.get('short'))}</code>" if p.get("short") else ""
         lines.append(" · ".join(x for x in (author, counts, short) if x))
+        # line 3: the commit message that last touched the crash line
+        if b.get("subject"):
+            lines.append(f"💬 <i>{esc(b['subject'])}</i>")
         lines.append("")
 
         # LLM cause / fix first (only present for escalating prod alerts)
@@ -713,7 +751,7 @@ class SentryEventHandler:
         # copyable quick commands (tap to copy on mobile)
         if p.get("short"):
             s = esc(p["short"])
-            lines.append(f"<code>/status {s}</code>   <code>/mute {s} 1</code>")
+            lines.append(f"<code>/status {s}</code>  <code>/mute {s} 1</code>  <code>/ai {s}</code>")
 
         # bottom: LLM API cost, or "cached" (with what it saved) on a cache hit
         m = p.get("llm_meta")
@@ -1059,6 +1097,8 @@ class SentryEventHandler:
                 p["blame"] = await self.fetch_blame(p["_loc"])
                 if p.get("blame"):                            # map vcs author -> @telegram
                     p["blame"]["tg"] = self.map_lookup(p["blame"].get("author"))
+            # save context so /ai can re-run the LLM on demand for this issue
+            self.store_ctx(p)
             # LLM cause/fix only for escalating alerts in prod
             is_prod = (p.get("environment") or "").lower() == "prod"
             analysis = await self.analyze(p) if (status == "escalating" and is_prod) else None

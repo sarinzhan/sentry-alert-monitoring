@@ -37,7 +37,8 @@ Precedence: new > critical > ongoing. Affected-user counting needs a user in the
 
 ```
 🚨 billing · prod · escalating
-uMelis · 2025-07-18 15:52 · 2343/43/22 · #a1b2c3
+@melis · 2025-07-18 15:52 · 2343/43/22 (12h/6h/10m) · #a1b2c3
+💬 refactor product dup check
 
 🤖 Likely cause: …
 Suggested fix: …
@@ -47,12 +48,13 @@ Culprit: …SubscriptionServiceImpl in addSubscriptionProduct
 level error
 SubscriptionServiceImpl.java:519 …
 Open in Sentry →
-/status a1b2c3   /mute a1b2c3 1
+/status a1b2c3  /mute a1b2c3 1  /ai a1b2c3
 💰 LLM: $0.0087 · 1423 in / 198 out
 ```
 
-Line 2 = **blame author · commit date-time · counts · `#short`**. The `#short` is a stable
-6-hex id for the issue (used by the commands). The `/status` and `/mute` lines are copyable.
+- **Line 2** = blame author (or mapped `@telegram`) · commit date-time · counts `(windows)` · `#short`.
+- **Line 3** = the commit message that last touched the crash line.
+- `#short` is a stable 6-hex issue id used by the commands; the `/status` `/mute` `/ai` line is copyable.
 
 ## Commands (in the chat)
 
@@ -63,6 +65,7 @@ under Telegram's default privacy mode (no BotFather change).
 |---|---|
 | `/help` · `/params` | list commands · current parameter values |
 | `/status <id>` | issue state: counts, last alert, mute |
+| `/ai <id>` | ask the LLM for cause/fix on demand (reuses cache; works for any alerted issue) |
 | `/mute <id> <days>` | snooze an issue (max `MUTE_MAX_DAYS`=7). Or **reply to an alert** with `/mute <days>` |
 | `/unmute <id>` · `/muted` | remove an issue mute · list muted issues |
 | `/mute_project <project> <days>` | mute a whole project (max `PROJECT_MUTE_MAX_DAYS`=15) |
