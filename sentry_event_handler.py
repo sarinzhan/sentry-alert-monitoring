@@ -20,7 +20,10 @@ import urllib.parse
 import httpx
 
 from config import (
-    CLIENT_SECRET, DB_PATH, SEND_WINDOWS, SPIKE_THRESHOLD, STAT_WINDOWS,
+    CLIENT_SECRET, DB_PATH, STAT_WINDOWS,
+    ONGOING_INTERVAL_SEC, CRITICAL_WINDOW_SEC, CRITICAL_RATELIMIT_SEC,
+    CRITICAL_ERROR_THRESHOLD, AFFECTED_USER_THRESHOLD,
+    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, KEYWORD_MIN_INTERVAL_SEC,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
     ANTHROPIC_PRICE_IN, ANTHROPIC_PRICE_OUT,
     ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE,
@@ -48,10 +51,12 @@ def _first(*vals):
 
 
 class SentryEventHandler:
-    def __init__(self, send, client, db_path=DB_PATH, windows=SEND_WINDOWS):
-        self._send = send          # async (text, chat_id=, message_thread_id=) -> bool
+    # prune events older than the widest window we ever query
+    PRUNE_HORIZON = max(max(STAT_WINDOWS), CRITICAL_WINDOW_SEC)
+
+    def __init__(self, send, client, db_path=DB_PATH):
+        self._send = send          # async (text, chat_id=, message_thread_id=) -> Message|None
         self._client = client      # httpx.AsyncClient, used for the LLM call
-        self._windows = windows
         self._db = sqlite3.connect(db_path, check_same_thread=False)
         self._db.execute(
             """
@@ -64,14 +69,53 @@ class SentryEventHandler:
             )
             """
         )
-        # one row per received event, so we can count occurrences per issue
-        # (total + last 5 min). Pruned to the last 24h to stay bounded.
+        # one row per received event, so we can count occurrences (and distinct users)
+        # per issue over the stat/critical windows. Pruned to PRUNE_HORIZON.
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS event_log (issue_id TEXT NOT NULL, ts REAL NOT NULL)"
         )
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS ix_event_log ON event_log (issue_id, ts)"
         )
+        # --- migrations (additive; ignore 'duplicate column' on re-run) ---
+        for stmt in (
+            "ALTER TABLE issue_state ADD COLUMN last_critical REAL DEFAULT 0",
+            "ALTER TABLE issue_state ADD COLUMN short TEXT",
+            "ALTER TABLE issue_state ADD COLUMN url TEXT",
+            "ALTER TABLE issue_state ADD COLUMN project TEXT",
+            "ALTER TABLE event_log ADD COLUMN usr TEXT",
+        ):
+            try:
+                self._db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+        # backfill the stable short id for pre-existing issues
+        for (iid,) in self._db.execute(
+            "SELECT issue_id FROM issue_state WHERE short IS NULL"
+        ).fetchall():
+            self._db.execute("UPDATE issue_state SET short=? WHERE issue_id=?",
+                             (self._short(iid), iid))
+        self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_issue_short ON issue_state(short)")
+        # commands / mutes / keywords (all persisted -> survive restart)
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS sent_message ("
+            " message_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL,"
+            " issue_id TEXT NOT NULL, short TEXT, at REAL NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS issue_mute ("
+            " issue_id TEXT PRIMARY KEY, until REAL NOT NULL, by TEXT, at REAL NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS project_mute ("
+            " project TEXT PRIMARY KEY, until REAL NOT NULL, by TEXT, at REAL NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS keyword ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL,"
+            " project TEXT, by TEXT, at REAL NOT NULL)"
+        )
+        self._db.execute("CREATE INDEX IF NOT EXISTS ix_keyword_proj ON keyword(project)")
         # cached LLM analysis per issue, keyed also by the crash-line commit so it
         # invalidates when the code changes. Persisted so it survives restarts.
         self._db.execute(
@@ -130,64 +174,235 @@ class SentryEventHandler:
                 ctx.verify_mode = ssl.CERT_NONE
             self._llm = httpx.AsyncClient(timeout=30, verify=ctx)
 
+    @staticmethod
+    def _short(issue_id) -> str:
+        """Stable short id (shown in the message, used by /mute and /status)."""
+        return hashlib.sha1(str(issue_id).encode()).hexdigest()[:6]
+
     # -------------------------------------------------- counting + send decision
-    async def register_and_decide(self, issue_id: str, title: str):
+    async def register_and_decide(self, issue_id, title, usr=None, muted=False, forced=False):
         """
         Record this occurrence, then decide whether to send and with what status.
-        Returns (send: bool, status: str|None, counts: list[int] over STAT_WINDOWS).
-        Under a lock so concurrent webhooks for the same issue can't race the state.
+        Returns (send, status, counts over STAT_WINDOWS, short). Under a lock so
+        concurrent webhooks for the same issue can't race the state.
 
-        status:
-          new         first message ever for this issue
-          escalating  >= SPIKE_THRESHOLD events since our last message for it
-          ongoing     a normal debounce-window send
+        status: new | ongoing (>=12h since last) | escalating (critical spike/users)
+        muted:  suppress unless forced by a keyword.  forced: keyword force-send.
         """
         now = time.time()
         async with self._lock:
-            self._db.execute("INSERT INTO event_log (issue_id, ts) VALUES (?, ?)", (issue_id, now))
-            self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - max(STAT_WINDOWS),))
+            self._db.execute("INSERT INTO event_log (issue_id, ts, usr) VALUES (?, ?, ?)",
+                             (issue_id, now, usr))
+            self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - self.PRUNE_HORIZON,))
 
-            def count(since):
-                return self._db.execute(
-                    "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, since)
+            counts = [
+                self._db.execute(
+                    "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, now - w)
                 ).fetchone()[0]
-
-            counts = [count(now - w) for w in STAT_WINDOWS]   # e.g. [24h, 30m, 5m]
+                for w in STAT_WINDOWS
+            ]
 
             row = self._db.execute(
-                "SELECT last_sent, step FROM issue_state WHERE issue_id=?", (issue_id,)
+                "SELECT last_sent, step, short, last_critical FROM issue_state WHERE issue_id=?",
+                (issue_id,),
             ).fetchone()
 
             if row is None:                                   # first time we see this issue
+                short = self._short(issue_id)
+                if muted and not forced:                      # remember it, but don't send
+                    self._db.execute(
+                        "INSERT INTO issue_state(issue_id, last_sent, step, last_critical, short, title, updated) "
+                        "VALUES (?, 0, 0, 0, ?, ?, ?)", (issue_id, short, title, now))
+                    self._db.commit()
+                    return False, None, counts, short
                 self._db.execute(
-                    "INSERT INTO issue_state(issue_id, last_sent, step, title, updated) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (issue_id, now, 1, title, now),
-                )
+                    "INSERT INTO issue_state(issue_id, last_sent, step, last_critical, short, title, updated) "
+                    "VALUES (?, ?, 1, 0, ?, ?, ?)", (issue_id, now, short, title, now))
                 self._db.commit()
-                return True, "new", counts
+                return True, "new", counts, short
 
-            last_sent, step = row
-            # events since our last message for this issue -> escalation signal
-            since_last = self._db.execute(
-                "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>?", (issue_id, last_sent)
+            last_sent, step, short, last_critical = row
+            if muted and not forced:
+                self._db.commit()
+                return False, None, counts, short
+
+            since = now - CRITICAL_WINDOW_SEC
+            crit_count = self._db.execute(
+                "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, since)
             ).fetchone()[0]
-            escalating = bool(SPIKE_THRESHOLD) and since_last >= SPIKE_THRESHOLD
+            crit_users = self._db.execute(
+                "SELECT COUNT(DISTINCT usr) FROM event_log WHERE issue_id=? AND ts>=? AND usr IS NOT NULL",
+                (issue_id, since),
+            ).fetchone()[0]
+            is_critical = (crit_count > CRITICAL_ERROR_THRESHOLD) or (crit_users >= AFFECTED_USER_THRESHOLD)
+            critical_allowed = is_critical and (now - (last_critical or 0)) >= CRITICAL_RATELIMIT_SEC
+            ongoing_ok = (now - last_sent) >= ONGOING_INTERVAL_SEC
 
-            gap_needed = self._windows[min(step - 1, len(self._windows) - 1)]
-            window_ok = (now - last_sent) >= gap_needed
+            if critical_allowed:
+                status = "escalating"
+            elif ongoing_ok:
+                status = "ongoing"
+            else:
+                status = None
 
-            if not (window_ok or escalating):
-                self._db.commit()                             # persist the event_log insert/prune
-                return False, None, counts
+            if forced and status is None:                     # keyword force-send
+                if KEYWORD_MIN_INTERVAL_SEC and (now - last_sent) < KEYWORD_MIN_INTERVAL_SEC:
+                    self._db.commit()
+                    return False, None, counts, short
+                status = "ongoing"
 
-            # a send resets the baseline, so escalation needs another THRESHOLD events
+            if status is None:
+                self._db.commit()
+                return False, None, counts, short
+
             self._db.execute(
-                "UPDATE issue_state SET last_sent=?, step=?, title=?, updated=? WHERE issue_id=?",
-                (now, step + 1, title, now, issue_id),
+                "UPDATE issue_state SET last_sent=?, step=?, last_critical=?, title=?, updated=? "
+                "WHERE issue_id=?",
+                (now, step + 1, now if status == "escalating" else (last_critical or 0),
+                 title, now, issue_id),
             )
             self._db.commit()
-            return True, ("escalating" if escalating else "ongoing"), counts
+            return True, status, counts, short
+
+    # ------------------------------------------------------ commands data layer
+    def store_sent(self, message_id, chat_id, issue_id, short, url, project):
+        """Map a sent alert -> issue (for reply-based /mute) and cache url/project."""
+        now = time.time()
+        self._db.execute(
+            "INSERT OR REPLACE INTO sent_message(message_id, chat_id, issue_id, short, at) "
+            "VALUES (?, ?, ?, ?, ?)", (message_id, chat_id, issue_id, short, now))
+        self._db.execute("DELETE FROM sent_message WHERE at < ?", (now - 30 * 86400,))
+        self._db.execute("UPDATE issue_state SET url=?, project=? WHERE issue_id=?",
+                         (url, project, issue_id))
+        self._db.commit()
+
+    def resolve_ref(self, ref):
+        """Look up an issue by its short id (#abc123) or raw issue id."""
+        ref = (ref or "").strip().lstrip("#")
+        if not ref:
+            return None
+        row = self._db.execute(
+            "SELECT issue_id, short, title, project, url FROM issue_state "
+            "WHERE short=? OR issue_id=? LIMIT 1", (ref.lower(), ref)).fetchone()
+        if not row:
+            return None
+        return {"issue_id": row[0], "short": row[1], "title": row[2],
+                "project": row[3], "url": row[4]}
+
+    def resolve_reply(self, message_id):
+        """Find the issue behind an alert message the user replied to."""
+        row = self._db.execute(
+            "SELECT s.issue_id, s.short, i.title, i.project, i.url FROM sent_message s "
+            "LEFT JOIN issue_state i ON i.issue_id=s.issue_id WHERE s.message_id=?",
+            (message_id,)).fetchone()
+        if not row:
+            return None
+        return {"issue_id": row[0], "short": row[1], "title": row[2],
+                "project": row[3], "url": row[4]}
+
+    def issue_status(self, ref):
+        info = self.resolve_ref(ref)
+        if not info:
+            return None
+        iid, now = info["issue_id"], time.time()
+        info["counts"] = [self._db.execute(
+            "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (iid, now - w)
+        ).fetchone()[0] for w in STAT_WINDOWS]
+        st = self._db.execute(
+            "SELECT last_sent, last_critical FROM issue_state WHERE issue_id=?", (iid,)
+        ).fetchone() or (0, 0)
+        info["last_sent"], info["last_critical"] = st
+        info["muted_until"] = self.is_issue_muted(iid, now)
+        return info
+
+    @staticmethod
+    def _clamp_days(days, maximum):
+        try:
+            return max(1, min(int(days), maximum))
+        except (TypeError, ValueError):
+            return None
+
+    def mute_issue(self, ref, days, by):
+        info = self.resolve_ref(ref)
+        if not info:
+            return None
+        d = self._clamp_days(days, MUTE_MAX_DAYS)
+        if d is None:
+            return None
+        now = time.time()
+        info["days"], info["until"] = d, now + d * 86400
+        self._db.execute(
+            "INSERT OR REPLACE INTO issue_mute(issue_id, until, by, at) VALUES (?, ?, ?, ?)",
+            (info["issue_id"], info["until"], by, now))
+        self._db.commit()
+        return info
+
+    def mute_project(self, project_ref, days, by):
+        d = self._clamp_days(days, PROJECT_MUTE_MAX_DAYS)
+        if d is None:
+            return None
+        now, key = time.time(), str(project_ref).strip()
+        until = now + d * 86400
+        self._db.execute(
+            "INSERT OR REPLACE INTO project_mute(project, until, by, at) VALUES (?, ?, ?, ?)",
+            (key, until, by, now))
+        self._db.commit()
+        return {"project": key, "days": d, "until": until}
+
+    def is_issue_muted(self, issue_id, now=None):
+        now = now or time.time()
+        row = self._db.execute("SELECT until FROM issue_mute WHERE issue_id=?", (issue_id,)).fetchone()
+        return row[0] if row and row[0] > now else None
+
+    def is_project_muted(self, p, now=None):
+        now = now or time.time()
+        for k in (str(p.get("project_id")), p.get("project")):
+            if not k:
+                continue
+            row = self._db.execute("SELECT until FROM project_mute WHERE project=?", (k,)).fetchone()
+            if row and row[0] > now:
+                return row[0]
+        return None
+
+    def is_suppressed(self, issue_id, p):
+        return bool(self.is_issue_muted(issue_id) or self.is_project_muted(p))
+
+    def keyword_match(self, text, p):
+        """Return the first watched keyword contained in text (global or this project)."""
+        t = (text or "").lower()
+        if not t:
+            return None
+        projkeys = [k for k in (str(p.get("project_id")), p.get("project")) if k]
+        for kw, proj in self._db.execute("SELECT text, project FROM keyword").fetchall():
+            if kw and kw in t and (proj is None or proj in projkeys):
+                return kw
+        return None
+
+    def add_keyword(self, text, project, by):
+        text = (text or "").strip().lower()
+        if not text:
+            return False
+        project = str(project).strip() if project else None
+        if self._db.execute("SELECT 1 FROM keyword WHERE text=? AND (project IS ? OR project=?)",
+                            (text, project, project)).fetchone():
+            return False
+        self._db.execute("INSERT INTO keyword(text, project, by, at) VALUES (?, ?, ?, ?)",
+                         (text, project, by, time.time()))
+        self._db.commit()
+        return True
+
+    def del_keyword(self, text, project):
+        text = (text or "").strip().lower()
+        project = str(project).strip() if project else None
+        cur = self._db.execute("DELETE FROM keyword WHERE text=? AND (project IS ? OR project=?)",
+                               (text, project, project))
+        self._db.commit()
+        return cur.rowcount
+
+    def list_keywords(self):
+        return self._db.execute(
+            "SELECT text, project FROM keyword ORDER BY project IS NULL DESC, project, text"
+        ).fetchall()
 
     async def aclose(self):
         if self._api is not None:
@@ -339,8 +554,20 @@ class SentryEventHandler:
         if isinstance(project, dict):
             project = project.get("slug") or project.get("name")
 
+        # affected-user identifier for the "critical by users" rule
+        u = obj.get("user") or {}
+        usr = _first(u.get("id"), u.get("email"), u.get("username"), u.get("ip_address"))
+        if not usr:
+            for t in (obj.get("tags") or []):
+                if isinstance(t, (list, tuple)) and len(t) == 2 and t[0] == "user":
+                    usr = t[1]; break
+                if isinstance(t, dict) and t.get("key") == "user":
+                    usr = t.get("value"); break
+        usr = str(usr)[:200] if usr else None
+
         return {
             "issue_id": issue_id,
+            "usr": usr,
             "event_id": _first(obj.get("event_id"), obj.get("eventID")),
             "action": action,
             "title": obj.get("title") or exc_type or "Sentry event",
@@ -370,14 +597,12 @@ class SentryEventHandler:
 
         # line 1: <emoji> project · env · status
         lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
-        # line 2: <blame author> · <commit date> · counts   (fallback: #uuid · counts)
+        # line 2: <blame author> · <commit date> · counts · #<short id for /mute,/status>
         counts = "/".join(esc(c) for c in (p.get("counts") or []))
         b = p.get("blame") or {}
-        if b.get("author"):
-            left = f"{esc(b['author'])} · {esc(b.get('date') or '?')}"
-        else:
-            left = f"<code>#{esc((p.get('event_id') or '?')[-6:])}</code>"
-        lines.append(f"{left} · {counts}" if counts else left)
+        author = f"{esc(b['author'])} · {esc(b.get('date') or '?')}" if b.get("author") else ""
+        short = f"<code>#{esc(p.get('short'))}</code>" if p.get("short") else ""
+        lines.append(" · ".join(x for x in (author, counts, short) if x))
         lines.append("")
 
         # LLM cause / fix first (only present for escalating prod alerts)
@@ -726,12 +951,15 @@ class SentryEventHandler:
             if p.get("action") not in NOTIFY_ACTIONS:
                 log.info("ignored action=%s issue=%s", p.get("action"), p["issue_id"])
                 return
+            # keyword force-send bypasses debounce + mute; else respect mutes
+            forced = self.keyword_match(f"{p.get('title') or ''} {p.get('value') or ''}", p) is not None
+            muted = (not forced) and self.is_suppressed(p["issue_id"], p)
             # record the occurrence, get counts, and decide send + status atomically
-            send, status, p["counts"] = \
-                await self.register_and_decide(p["issue_id"], p.get("title") or "")
+            send, status, p["counts"], p["short"] = await self.register_and_decide(
+                p["issue_id"], p.get("title") or "", p.get("usr"), muted, forced)
             if not send:
-                log.info("debounced issue=%s counts=%s", p["issue_id"], p["counts"])
-                # debug: build + log the prompt for debounced events too
+                log.info("skip issue=%s counts=%s muted=%s", p["issue_id"], p["counts"], muted)
+                # debug: build + log the prompt for skipped events too
                 if LOG_LLM_PROMPT:
                     p["_loc"] = await self.locate_source(p)
                     if p["_loc"]:
@@ -748,7 +976,11 @@ class SentryEventHandler:
             # LLM cause/fix only for escalating alerts in prod
             is_prod = (p.get("environment") or "").lower() == "prod"
             analysis = await self.analyze(p) if (status == "escalating" and is_prod) else None
-            await self._send(self.build_message(p, analysis))
-            log.info("sent issue=%s status=%s counts=%s", p["issue_id"], status, p["counts"])
+            msg = await self._send(self.build_message(p, analysis))
+            if msg is not None:
+                self.store_sent(msg.message_id, msg.chat_id, p["issue_id"],
+                                p["short"], p.get("url"), p.get("project"))
+            log.info("sent issue=%s status=%s counts=%s%s",
+                     p["issue_id"], status, p["counts"], " FORCED" if forced else "")
         except Exception as e:
             log.exception("process failed: %s", e)

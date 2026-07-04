@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     client = httpx.AsyncClient(timeout=15)
     bot = ChatBotHandler(BOT_TOKEN)
     sentry = SentryEventHandler(send=bot.send, client=client)
+    bot.attach_commands(sentry)        # /status /mute /mute_project /watch
 
     app.state.client = client
     app.state.bot = bot

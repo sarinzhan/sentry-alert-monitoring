@@ -91,16 +91,29 @@ TELEGRAM_POLLING = os.environ.get("TELEGRAM_POLLING", "true").lower() == "true"
 # inspecting payload shape (e.g. what the `project` field actually contains).
 LOG_RAW_PAYLOAD = os.environ.get("LOG_RAW_PAYLOAD", "true").lower() == "true"
 
-# Debounce. The first occurrence of an issue sends immediately; these are the
-# required gaps (seconds) before the 2nd, 3rd, ... send for the SAME issue.
-# The last value repeats forever. [60, 300] = "now, then >=1m, then every 5m".
-SEND_WINDOWS = [60, 300]
+# --- alert-trigger model ---
+# Send an alert for an issue when ANY of:
+#   new         first time we see the issue
+#   ongoing     >= WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR since the last alert (min gap)
+#   escalating  within WINDOW_CRITICAL_INTERVAL_IN_MINUTE: occurrences > CRITICAL_ERROR_THRESHOLD
+#               OR distinct affected users >= AFFECTED_USER_THRESHOLD; at most once per
+#               WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR.
+WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR = float(os.environ.get("WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR", "12"))
+WINDOW_CRITICAL_INTERVAL_IN_MINUTE      = float(os.environ.get("WINDOW_CRITICAL_INTERVAL_IN_MINUTE", "10"))
+CRITICAL_ERROR_THRESHOLD                = int(os.environ.get("CRITICAL_ERROR_THRESHOLD", "15"))   # occurrences, strict >
+AFFECTED_USER_THRESHOLD                 = int(os.environ.get("AFFECTED_USER_THRESHOLD", "5"))     # distinct users, >=
+WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR    = float(os.environ.get("WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR", "4"))
 
-# Escalation rule: if an issue fires >= SPIKE_THRESHOLD times SINCE the last message
-# we sent for it, send an "escalating" alert even if the debounce would suppress it.
-# Sending resets that baseline, so it re-fires only after another THRESHOLD events.
-# 0 disables escalation.
-SPIKE_THRESHOLD = int(os.environ.get("SPIKE_THRESHOLD", "5"))
+ONGOING_INTERVAL_SEC   = int(WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR * 3600)
+CRITICAL_WINDOW_SEC    = int(WINDOW_CRITICAL_INTERVAL_IN_MINUTE * 60)
+CRITICAL_RATELIMIT_SEC = int(WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR * 3600)
+
+# Mute limits (days) for /mute and /mute_project.
+MUTE_MAX_DAYS         = int(os.environ.get("MUTE_MAX_DAYS", "7"))
+PROJECT_MUTE_MAX_DAYS = int(os.environ.get("PROJECT_MUTE_MAX_DAYS", "15"))
+# Keyword force-send: matching alerts are sent bypassing debounce+mute. 0 = every event
+# ("во всех случаях"); set >0 seconds as an anti-spam floor between forced sends per issue.
+KEYWORD_MIN_INTERVAL_SEC = int(os.environ.get("KEYWORD_MIN_INTERVAL_SEC", "0"))
 
 # The three occurrence-count windows shown on line 2 of the message (e.g. 437/15/6).
 # Durations: suffix s/m/h/d, bare number = seconds. Default 24h / 30m / 5m.
@@ -171,7 +184,11 @@ def banner():
         f"  sentry signature  {'on (' + _mask(CLIENT_SECRET) + ')' if CLIENT_SECRET else 'OFF — no verification'}",
         f"  sentry api        url={SENTRY_API_URL} org={SENTRY_ORG} token={_mask(SENTRY_API_TOKEN)}",
         f"  project names     {PROJECT_NAMES or '-'}",
-        f"  debounce windows  {SEND_WINDOWS}  spike_threshold={SPIKE_THRESHOLD}",
+        f"  triggers          ongoing>={WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR}h · "
+        f"critical: >{CRITICAL_ERROR_THRESHOLD} err OR >={AFFECTED_USER_THRESHOLD} usr "
+        f"in {WINDOW_CRITICAL_INTERVAL_IN_MINUTE}m, max 1/{WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR}h",
+        f"  mute limits       issue<={MUTE_MAX_DAYS}d project<={PROJECT_MUTE_MAX_DAYS}d "
+        f"kw_min_interval={KEYWORD_MIN_INTERVAL_SEC}s",
         f"  stat windows      {STAT_WINDOWS} (seconds)",
         f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
         f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
