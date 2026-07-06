@@ -17,8 +17,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.request import HTTPXRequest
 
 from config import (
-    TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE,
-    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, ALERT_STATUSES,
+    TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE, ALERT_STATUSES,
     params_summary, parse_duration, log,
 )
 from utils import esc
@@ -34,14 +33,8 @@ HELP_TEXT = (
     "(<code>/params</code> — текущие). Параметры: ongoing, critical_window, "
     "critical_threshold, affected_users, critical_ratelimit, stat_windows\n"
     "<b>Ошибки</b>\n"
-    "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт, мьют)\n"
+    "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт)\n"
     "<code>/ai &lt;id&gt;</code> — спросить AI: причина и фикс\n"
-    "<code>/mute &lt;id&gt; &lt;дней&gt;</code> — отсрочить ошибку (макс "
-    f"{MUTE_MAX_DAYS} дн.); или ответом на алерт: <code>/mute &lt;дней&gt;</code>\n"
-    "<code>/unmute &lt;id&gt;</code> · <code>/muted</code> — снять мьют · список замьюченных\n"
-    "<code>/mute_project &lt;проект&gt; &lt;дней&gt;</code> — отключить проект (макс "
-    f"{PROJECT_MUTE_MAX_DAYS} дн.)\n"
-    "<code>/unmute_project &lt;проект&gt;</code> — снять мьют проекта\n"
     "<code>/watch add|del &lt;текст&gt; [проект]</code> · <code>/watched</code> — force-send по тексту\n"
     "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code> · <code>/map del|list</code> — автор коммита → Telegram\n"
     "<b>id</b> — короткий код <code>#abcdef</code> из строки 2 алерта."
@@ -104,7 +97,7 @@ class ChatBotHandler:
         self._sentry = None
 
     def attach_commands(self, sentry):
-        """Wire the /status /mute /mute_project /watch commands to the data layer.
+        """Wire the /subscribe /alerts /set /status /watch commands to the data layer.
         Called from the controller after the SentryEventHandler exists."""
         self._sentry = sentry
         self.app.add_handler(CommandHandler("help", self.on_help))
@@ -117,11 +110,6 @@ class ChatBotHandler:
         self.app.add_handler(CommandHandler("set", self.on_set))
         self.app.add_handler(CommandHandler("status", self.on_status))
         self.app.add_handler(CommandHandler("ai", self.on_ai))
-        self.app.add_handler(CommandHandler("mute", self.on_mute))
-        self.app.add_handler(CommandHandler("unmute", self.on_unmute))
-        self.app.add_handler(CommandHandler("muted", self.on_muted))
-        self.app.add_handler(CommandHandler("mute_project", self.on_mute_project))
-        self.app.add_handler(CommandHandler("unmute_project", self.on_unmute_project))
         self.app.add_handler(CommandHandler("projects", self.on_projects))
         self.app.add_handler(CommandHandler("watch", self.on_watch))
         self.app.add_handler(CommandHandler("watched", self.on_watched))
@@ -255,40 +243,13 @@ class ChatBotHandler:
         counts = "/".join(str(c) for c in info["counts"])
         title = esc(info.get("title") or "?")
         title = f'<a href="{esc(info["url"])}">{title}</a>' if info.get("url") else title
-        mute = (f"замьючено до {_fmt_ts(info['muted_until'])}"
-                if info.get("muted_until") else "нет")
         lines = [
             f"#<code>{esc(info['short'])}</code> · <b>{esc(info.get('project') or '?')}</b>",
             title,
             f"события ({labels}): <b>{counts}</b>",
             f"последний алерт: {_fmt_ts(info.get('last_sent'))}",
-            f"мьют: {mute}",
         ]
         await self._reply(update, "\n".join(lines))
-
-    async def on_mute(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        by = update.effective_user.full_name if update.effective_user else "?"
-        reply_to = update.effective_message.reply_to_message
-        # reply form: reply to an alert with "/mute <days>"; else "/mute <id> <days>"
-        if reply_to and len(ctx.args) == 1:
-            info = self._sentry.resolve_reply(reply_to.message_id)
-            if not info:
-                return await self._reply(update, "Не нашёл ошибку для этого сообщения — "
-                                                 "укажи id: <code>/mute &lt;id&gt; &lt;дней&gt;</code>")
-            ref, days = info["short"] or info["issue_id"], ctx.args[0]
-        elif len(ctx.args) >= 2:
-            ref, days = ctx.args[0], ctx.args[1]
-        else:
-            return await self._reply(update, "Использование: <code>/mute &lt;id&gt; &lt;дней&gt;</code> "
-                                             "или ответом на алерт: <code>/mute &lt;дней&gt;</code>")
-        res = self._sentry.mute_issue(ref, days, by)
-        if not res:
-            return await self._reply(update, f"Не удалось: ошибка <code>{esc(ref)}</code> не найдена "
-                                             f"или неверное число дней (1..{MUTE_MAX_DAYS}).")
-        link = (f'<a href="{esc(res["url"])}">#{esc(res["short"])}</a>'
-                if res.get("url") else f"#{esc(res['short'])}")
-        await self._reply(update, f"Пользователь <b>{esc(by)}</b> отсрочил ошибку {link} "
-                                  f"на {res['days']} дн. (до {_fmt_ts(res['until'])}).")
 
     async def on_ai(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:
@@ -298,45 +259,6 @@ class ChatBotHandler:
         if res is None:
             return await self._reply(update, f"Ошибка <code>{esc(ctx.args[0])}</code> не найдена.")
         await self._reply(update, res)
-
-    async def on_unmute(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if not ctx.args:
-            return await self._reply(update, "Использование: <code>/unmute &lt;id&gt;</code>")
-        info = self._sentry.unmute_issue(ctx.args[0])
-        if not info:
-            return await self._reply(update, f"Ошибка <code>{esc(ctx.args[0])}</code> не найдена.")
-        await self._reply(update, f"Мьют снят с ошибки "
-                                  f"<code>#{esc(info['short'] or info['issue_id'])}</code>.")
-
-    async def on_muted(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        rows = self._sentry.list_muted_issues()
-        if not rows:
-            return await self._reply(update, "Замьюченных ошибок нет.")
-        lines = ["<b>Замьюченные ошибки:</b>"]
-        for issue_id, short, title, until, by in rows:
-            sid = esc(short or issue_id)
-            t = esc((title or "")[:60])
-            who = f" · {esc(by)}" if by else ""
-            lines.append(f"<code>#{sid}</code> {t} — до {_fmt_ts(until)}{who}")
-        await self._reply(update, "\n".join(lines))
-
-    async def on_mute_project(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        by = update.effective_user.full_name if update.effective_user else "?"
-        if len(ctx.args) < 2:
-            return await self._reply(update, "Использование: "
-                                             "<code>/mute_project &lt;проект&gt; &lt;дней&gt;</code>")
-        res = self._sentry.mute_project(ctx.args[0], ctx.args[1], by)
-        if not res:
-            return await self._reply(update, f"Неверное число дней (1..{PROJECT_MUTE_MAX_DAYS}).")
-        await self._reply(update, f"Пользователь <b>{esc(by)}</b> отключил алерты проекта "
-                                  f"<b>{esc(res['project'])}</b> на {res['days']} дн. "
-                                  f"(до {_fmt_ts(res['until'])}).")
-
-    async def on_unmute_project(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        if not ctx.args:
-            return await self._reply(update, "Использование: <code>/unmute_project &lt;проект&gt;</code>")
-        n = self._sentry.unmute_project(ctx.args[0])
-        await self._reply(update, "Мьют проекта снят." if n else "Такой мьют проекта не найден.")
 
     async def on_projects(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows = self._sentry.projects_overview()
@@ -350,9 +272,8 @@ class ChatBotHandler:
         for r in rows:
             name = esc(r["name"] or "?")
             repo = f" → <code>{esc(r['repo'])}</code>" if r["repo"] else ""
-            mute = f" · 🔕 до {_fmt_ts(r['muted_until'])}" if r["muted_until"] else ""
             mark = "✅ " if (all_sub or str(r["id"]) in subs or (r["name"] and r["name"] in subs)) else ""
-            lines.append(f"{mark}<code>{esc(r['id'])}</code> {name}{repo}{mute}")
+            lines.append(f"{mark}<code>{esc(r['id'])}</code> {name}{repo}")
         lines.append("\nПодписаться: <code>/subscribe &lt;id|имя|all&gt;</code>")
         await self._reply(update, "\n".join(lines))
 

@@ -23,8 +23,7 @@ from config import (
     CLIENT_SECRET, DB_PATH, STAT_WINDOWS,
     DEFAULT_RULES, ALERT_STATUSES,
     ONGOING_INTERVAL_SEC, CRITICAL_WINDOW_SEC, CRITICAL_RATELIMIT_SEC,
-    CRITICAL_ERROR_THRESHOLD, AFFECTED_USER_THRESHOLD,
-    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, KEYWORD_MIN_INTERVAL_SEC,
+    CRITICAL_ERROR_THRESHOLD, AFFECTED_USER_THRESHOLD, KEYWORD_MIN_INTERVAL_SEC,
     ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
     ANTHROPIC_PRICE_IN, ANTHROPIC_PRICE_OUT, USD_KGS_RATE,
     ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE,
@@ -113,19 +112,11 @@ class SentryEventHandler:
             self._db.execute("UPDATE issue_state SET short=? WHERE issue_id=?",
                              (self._short(iid), iid))
         self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_issue_short ON issue_state(short)")
-        # commands / mutes / keywords (all persisted -> survive restart)
+        # commands / keywords (all persisted -> survive restart)
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS sent_message ("
             " message_id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL,"
             " issue_id TEXT NOT NULL, short TEXT, at REAL NOT NULL)"
-        )
-        self._db.execute(
-            "CREATE TABLE IF NOT EXISTS issue_mute ("
-            " issue_id TEXT PRIMARY KEY, until REAL NOT NULL, by TEXT, at REAL NOT NULL)"
-        )
-        self._db.execute(
-            "CREATE TABLE IF NOT EXISTS project_mute ("
-            " project TEXT PRIMARY KEY, until REAL NOT NULL, by TEXT, at REAL NOT NULL)"
         )
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS keyword ("
@@ -226,7 +217,7 @@ class SentryEventHandler:
 
     @staticmethod
     def _short(issue_id) -> str:
-        """Stable short id (shown in the message, used by /mute and /status)."""
+        """Stable short id (shown in the message, used by /status and /ai)."""
         return hashlib.sha1(str(issue_id).encode()).hexdigest()[:6]
 
     # -------------------------------------------------- counting + send decision
@@ -259,7 +250,7 @@ class SentryEventHandler:
         return cnt, usrs
 
     def ensure_issue(self, issue_id, title):
-        """Upsert issue metadata (stable short id + title) used by /status, /mute, /ai.
+        """Upsert issue metadata (stable short id + title) used by /status, /ai.
         Returns the short id. Does not touch send-state (that is now per chat)."""
         short = self._short(issue_id)
         row = self._db.execute("SELECT 1 FROM issue_state WHERE issue_id=?", (issue_id,)).fetchone()
@@ -375,13 +366,13 @@ class SentryEventHandler:
                 out[cid] = tid
         return list(out.items())
 
-    def decide_for_chat(self, chat_id, issue_id, rules, now, muted=False, forced=False):
+    def decide_for_chat(self, chat_id, issue_id, rules, now, forced=False):
         """
         Decide whether THIS chat should get an alert for this issue, using the chat's
         own rules and its own (chat, issue) send-state. Returns (send, status).
 
         status: new | ongoing (>= chat's min gap) | escalating (chat's critical spike).
-        muted:  global mute suppresses unless forced by a keyword.  forced: keyword force-send.
+        forced: keyword force-send (bypasses the min gap + status filter).
         """
         chat_id = str(chat_id)
         statuses = rules.get("statuses")            # None = all
@@ -400,11 +391,6 @@ class SentryEventHandler:
                 "INSERT OR REPLACE INTO chat_issue_state(chat_id, issue_id, last_sent, last_critical, step) "
                 "VALUES (?, ?, ?, ?, ?)", (chat_id, issue_id, ls, lc, st))
             self._db.commit()
-
-        if muted and not forced:
-            if first_time:
-                remember(0, 0, 0)                   # seen while muted -> not "new" later
-            return False, None
 
         if first_time:
             if allowed("new"):
@@ -434,7 +420,7 @@ class SentryEventHandler:
 
     # ------------------------------------------------------ commands data layer
     def store_sent(self, message_id, chat_id, issue_id, short, url, project):
-        """Map a sent alert -> issue (for reply-based /mute) and cache url/project."""
+        """Map a sent alert -> issue (for reply-based commands) and cache url/project."""
         now = time.time()
         self._db.execute(
             "INSERT OR REPLACE INTO sent_message(message_id, chat_id, issue_id, short, at) "
@@ -478,60 +464,7 @@ class SentryEventHandler:
             "SELECT last_sent, last_critical FROM issue_state WHERE issue_id=?", (iid,)
         ).fetchone() or (0, 0)
         info["last_sent"], info["last_critical"] = st
-        info["muted_until"] = self.is_issue_muted(iid, now)
         return info
-
-    @staticmethod
-    def _clamp_days(days, maximum):
-        try:
-            return max(1, min(int(days), maximum))
-        except (TypeError, ValueError):
-            return None
-
-    def mute_issue(self, ref, days, by):
-        info = self.resolve_ref(ref)
-        if not info:
-            return None
-        d = self._clamp_days(days, MUTE_MAX_DAYS)
-        if d is None:
-            return None
-        now = time.time()
-        info["days"], info["until"] = d, now + d * 86400
-        self._db.execute(
-            "INSERT OR REPLACE INTO issue_mute(issue_id, until, by, at) VALUES (?, ?, ?, ?)",
-            (info["issue_id"], info["until"], by, now))
-        self._db.commit()
-        return info
-
-    def mute_project(self, project_ref, days, by):
-        d = self._clamp_days(days, PROJECT_MUTE_MAX_DAYS)
-        if d is None:
-            return None
-        now, key = time.time(), str(project_ref).strip()
-        until = now + d * 86400
-        self._db.execute(
-            "INSERT OR REPLACE INTO project_mute(project, until, by, at) VALUES (?, ?, ?, ?)",
-            (key, until, by, now))
-        self._db.commit()
-        return {"project": key, "days": d, "until": until}
-
-    def is_issue_muted(self, issue_id, now=None):
-        now = now or time.time()
-        row = self._db.execute("SELECT until FROM issue_mute WHERE issue_id=?", (issue_id,)).fetchone()
-        return row[0] if row and row[0] > now else None
-
-    def is_project_muted(self, p, now=None):
-        now = now or time.time()
-        for k in (str(p.get("project_id")), p.get("project")):
-            if not k:
-                continue
-            row = self._db.execute("SELECT until FROM project_mute WHERE project=?", (k,)).fetchone()
-            if row and row[0] > now:
-                return row[0]
-        return None
-
-    def is_suppressed(self, issue_id, p):
-        return bool(self.is_issue_muted(issue_id) or self.is_project_muted(p))
 
     def keyword_match(self, text, p):
         """Return the first watched keyword contained in text (global or this project)."""
@@ -570,39 +503,11 @@ class SentryEventHandler:
             "SELECT text, project FROM keyword ORDER BY project IS NULL DESC, project, text"
         ).fetchall()
 
-    # --- muted issues / projects (list + unmute) ---
-    def list_muted_issues(self, now=None):
-        now = now or time.time()
-        return self._db.execute(
-            "SELECT m.issue_id, i.short, i.title, m.until, m.by FROM issue_mute m "
-            "LEFT JOIN issue_state i ON i.issue_id=m.issue_id "
-            "WHERE m.until > ? ORDER BY m.until", (now,)).fetchall()
-
-    def unmute_issue(self, ref):
-        info = self.resolve_ref(ref)
-        if not info:
-            return None
-        self._db.execute("DELETE FROM issue_mute WHERE issue_id=?", (info["issue_id"],))
-        self._db.commit()
-        return info
-
-    def list_project_mutes(self, now=None):
-        now = now or time.time()
-        return self._db.execute(
-            "SELECT project, until, by FROM project_mute WHERE until > ? ORDER BY until", (now,)
-        ).fetchall()
-
-    def unmute_project(self, project):
-        cur = self._db.execute("DELETE FROM project_mute WHERE project=?", (str(project).strip(),))
-        self._db.commit()
-        return cur.rowcount
-
     def projects_overview(self, now=None):
-        """Known projects (from config) + their mute state."""
-        muted = {row[0]: row[1] for row in self.list_project_mutes(now)}
-        ids = set(PROJECT_NAMES) | set(GITLAB_PROJECTS) | set(muted)
-        return [{"id": pid, "name": PROJECT_NAMES.get(pid), "repo": GITLAB_PROJECTS.get(pid),
-                 "muted_until": muted.get(pid)} for pid in sorted(ids, key=str)]
+        """Known projects (from config: SENTRY_PROJECTS / GITLAB_PROJECTS)."""
+        ids = set(PROJECT_NAMES) | set(GITLAB_PROJECTS)
+        return [{"id": pid, "name": PROJECT_NAMES.get(pid), "repo": GITLAB_PROJECTS.get(pid)}
+                for pid in sorted(ids, key=str)]
 
     # --- vcs author -> telegram handle ---
     def map_add(self, vcs, telegram, by):
@@ -904,7 +809,7 @@ class SentryEventHandler:
         # copyable quick commands (tap to copy on mobile)
         if p.get("short"):
             s = esc(p["short"])
-            lines.append(f"<code>/status {s}</code>  <code>/mute {s} 1</code>  <code>/ai {s}</code>")
+            lines.append(f"<code>/status {s}</code>  <code>/ai {s}</code>")
 
         # bottom: LLM API cost (USD + som), or "cached" (with what it saved) on a hit
         m = p.get("llm_meta")
@@ -1231,9 +1136,8 @@ class SentryEventHandler:
             await self.register_event(p["issue_id"], p.get("usr"))
             p["short"] = self.ensure_issue(p["issue_id"], p.get("title") or "")
 
-            # keyword force-send bypasses debounce + mute; else respect mutes
+            # keyword force-send bypasses the per-chat min gap + status filter
             forced = self.keyword_match(f"{p.get('title') or ''} {p.get('value') or ''}", p) is not None
-            muted = (not forced) and self.is_suppressed(p["issue_id"], p)
 
             # who wants this project? (subscription by numeric id, slug, or '*'). No
             # subscribers -> nothing to do (alerts are opt-in per chat).
@@ -1265,7 +1169,7 @@ class SentryEventHandler:
                 rules = self.effective_rules(chat_id)
                 async with self._lock:
                     send, status = self.decide_for_chat(
-                        chat_id, p["issue_id"], rules, now, muted, forced)
+                        chat_id, p["issue_id"], rules, now, forced)
                 if not send:
                     continue
                 # LLM cause/fix only for escalating alerts in prod (computed once, reused)
@@ -1293,8 +1197,8 @@ class SentryEventHandler:
                              p["issue_id"], chat_id, status, pc["counts"],
                              " FORCED" if forced else "")
             if not sent:
-                log.info("skip issue=%s no chat triggered (targets=%d muted=%s)",
-                         p["issue_id"], len(targets), muted)
+                log.info("skip issue=%s no chat triggered (targets=%d)",
+                         p["issue_id"], len(targets))
         except Exception as e:
             log.exception("process failed: %s", e)
 

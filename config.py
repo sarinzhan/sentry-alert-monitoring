@@ -100,10 +100,7 @@ ONGOING_INTERVAL_SEC   = int(WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR * 3600)
 CRITICAL_WINDOW_SEC    = int(WINDOW_CRITICAL_INTERVAL_IN_MINUTE * 60)
 CRITICAL_RATELIMIT_SEC = int(WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR * 3600)
 
-# Mute limits (days) for /mute and /mute_project.
-MUTE_MAX_DAYS         = int(os.environ.get("MUTE_MAX_DAYS", "7"))
-PROJECT_MUTE_MAX_DAYS = int(os.environ.get("PROJECT_MUTE_MAX_DAYS", "15"))
-# Keyword force-send: matching alerts are sent bypassing debounce+mute. 0 = every event
+# Keyword force-send: matching alerts are sent bypassing the min gap. 0 = every event
 # ("во всех случаях"); set >0 seconds as an anti-spam floor between forced sends per issue.
 KEYWORD_MIN_INTERVAL_SEC = int(os.environ.get("KEYWORD_MIN_INTERVAL_SEC", "0"))
 
@@ -200,8 +197,7 @@ def banner():
         f"  triggers          ongoing>={WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR}h · "
         f"critical: >{CRITICAL_ERROR_THRESHOLD} err OR >={AFFECTED_USER_THRESHOLD} usr "
         f"in {WINDOW_CRITICAL_INTERVAL_IN_MINUTE}m, max 1/{WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR}h",
-        f"  mute limits       issue<={MUTE_MAX_DAYS}d project<={PROJECT_MUTE_MAX_DAYS}d "
-        f"kw_min_interval={KEYWORD_MIN_INTERVAL_SEC}s",
+        f"  keyword           kw_min_interval={KEYWORD_MIN_INTERVAL_SEC}s",
         f"  stat windows      {'/'.join(_wlabel(w) for w in STAT_WINDOWS)}",
         f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
         f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
@@ -252,7 +248,6 @@ def params_summary(rules=None):
     Pass a chat's effective rules to show its overrides; defaults otherwise."""
     return "\n".join([
         rules_summary(rules or DEFAULT_RULES),
-        "mute max:                 issue %dd · project %dd" % (MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS),
         "keyword min interval:     %ds" % KEYWORD_MIN_INTERVAL_SEC,
         "llm:                      enabled=%s model=%s max_tokens=%d" % (
             ENABLE_LLM, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS),

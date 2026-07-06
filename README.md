@@ -2,7 +2,7 @@
 
 Receives Sentry webhooks and posts errors to **any** Telegram chat/forum topic that
 subscribes, with an intentional trigger model (new / ongoing / critical), interactive
-control from the chat (mute, per-project mute, keyword force-send), and an optional LLM
+control from the chat (per-chat subscriptions, rules, keyword force-send), and an optional LLM
 cause/fix enriched with the real source, author (git blame) and the diff that last touched
 the crash line. All state is in SQLite, so everything survives restarts.
 
@@ -25,8 +25,8 @@ the bot to a chat/topic, send `/start` for a quick guide, then `/subscribe`.
 |---|---|
 | `config.py` | `.env` loading, settings, startup `banner()` / `params_summary()` |
 | `utils.py` | shared helpers (`esc`) |
-| `chat_bot_handler.py` | Telegram app: sending + commands (`/subscribe /alerts /set /status /mute …`) |
-| `sentry_event_handler.py` | verify, parse, per-chat subscriptions/rules/decision, mutes/keywords, format, GitLab, LLM |
+| `chat_bot_handler.py` | Telegram app: sending + commands (`/subscribe /alerts /set /status /watch …`) |
+| `sentry_event_handler.py` | verify, parse, per-chat subscriptions/rules/decision, keywords, format, GitLab, LLM |
 | `controller.py` | FastAPI app: endpoints + lifespan wiring |
 | `main.py` | entry point |
 
@@ -62,13 +62,13 @@ Culprit: …SubscriptionServiceImpl in addSubscriptionProduct
 level error
 SubscriptionServiceImpl.java:519 …
 Open in Sentry →
-/status a1b2c3  /mute a1b2c3 1  /ai a1b2c3
+/status a1b2c3  /ai a1b2c3
 💰 LLM: $0.0087 · 1423 in / 198 out
 ```
 
 - **Line 2** = blame author (or mapped `@telegram`) · commit date-time · counts `(windows)` · `#short`.
 - **Line 3** = the commit message that last touched the crash line.
-- `#short` is a stable 6-hex issue id used by the commands; the `/status` `/mute` `/ai` line is copyable.
+- `#short` is a stable 6-hex issue id used by the commands; the `/status` `/ai` line is copyable.
 
 ## Commands (in the chat)
 
@@ -82,19 +82,16 @@ under Telegram's default privacy mode (no BotFather change).
 | `/subscriptions` · `/projects` | this chat's subscriptions · all projects (✅ = subscribed) |
 | `/alerts <new ongoing escalating\|all>` | which statuses this chat receives (default all) |
 | `/set <param> <value>` · `/set reset` | this chat's rules: `ongoing`, `critical_window`, `critical_threshold`, `affected_users`, `critical_ratelimit`, `stat_windows` |
-| `/status <id>` | issue state: counts, last alert, mute |
+| `/status <id>` | issue state: counts, last alert |
 | `/ai <id>` | ask the LLM for cause/fix on demand (reuses cache; works for any alerted issue) |
-| `/mute <id> <days>` | snooze an issue (max `MUTE_MAX_DAYS`=7). Or **reply to an alert** with `/mute <days>` |
-| `/unmute <id>` · `/muted` | remove an issue mute · list muted issues |
-| `/mute_project <project> <days>` | mute a whole project (max `PROJECT_MUTE_MAX_DAYS`=15) |
-| `/unmute_project <project>` | remove a project mute (`/projects` shows mute state) |
 | `/watch add\|del <text> [project]` · `/watched` | keyword force-send (global or per-project) |
 | `/map <vcs_author> @<tg>` · `/map del\|list` | map a commit author to a Telegram handle |
 
-`<id>` is the `#short` from line 2. Keyword force-send bypasses debounce and mutes
-(set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam floor). When a `/map` entry matches the
-crash-line author (git blame), line 2 shows the mapped `@telegram` (pinged) instead of the
-VCS name.
+To stop alerts, a chat simply `/unsubscribe`s the project or narrows `/alerts` — there is no
+per-issue mute. `<id>` is the `#short` from line 2. Keyword force-send bypasses the per-chat
+min gap and status filter (set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam floor). When a
+`/map` entry matches the crash-line author (git blame), line 2 shows the mapped `@telegram`
+(pinged) instead of the VCS name.
 
 ## LLM cause/fix + GitLab (optional)
 
@@ -114,8 +111,7 @@ Copy `.env.example` and fill in. Highlights (see `.env.example` for the full lis
 | `TELEGRAM_BOT_TOKEN` | bot token (the only required var; chats subscribe at runtime) |
 | `SENTRY_CLIENT_SECRET` | Internal Integration secret (verifies the webhook; empty = off) |
 | `STAT_WINDOWS` | the 3 count windows on line 2 (durations `s/m/h/d`) |
-| `WINDOW_*` / `*_THRESHOLD` | the trigger model (see above) |
-| `MUTE_MAX_DAYS` / `PROJECT_MUTE_MAX_DAYS` | mute limits |
+| `WINDOW_*` / `*_THRESHOLD` | the trigger model defaults (each chat can override) |
 | `SENTRY_PROJECTS` | project id → display name for the header |
 | `GITLAB_URL` / `GITLAB_TOKEN` / `GITLAB_PROJECTS` | GitLab source/blame lookup |
 | `ENABLE_LLM` / `ANTHROPIC_*` | LLM cause/fix |
