@@ -130,6 +130,29 @@ def _wlabel(sec):
             return f"{sec // n}{unit}"
     return f"{sec}s"
 
+
+def fmt_duration(sec):
+    """Seconds -> compact d/h/m/s label (e.g. 43200 -> '12h')."""
+    sec = int(sec)
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if sec and sec % n == 0:
+            return f"{sec // n}{unit}"
+    return f"{sec}s"
+
+
+def parse_duration(s):
+    """'12h' / '10m' / '30s' / '1d' / bare-seconds -> int seconds, or None if unparseable."""
+    s = str(s).strip().lower()
+    if not s:
+        return None
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    try:
+        if s[-1] in units:
+            return int(float(s[:-1]) * units[s[-1]])
+        return int(float(s))
+    except (ValueError, IndexError):
+        return None
+
 # Future feature: ask an LLM for likely cause + fix. Off by default.
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
@@ -169,7 +192,8 @@ def _mask(v):
 
 def banner():
     """Multi-line summary of the effective config at startup (secrets masked)."""
-    chat = f"{CHAT_ID}" + (f" topic={CHAT_THREAD_ID}" if CHAT_THREAD_ID else "")
+    chat = (f"{CHAT_ID}" + (f" topic={CHAT_THREAD_ID}" if CHAT_THREAD_ID else "")
+            if CHAT_ID else "- (opt-in: chats self-subscribe with /subscribe)")
     lines = [
         "=" * 64,
         " sentry-telegram — starting",
@@ -202,15 +226,42 @@ def banner():
     return "\n".join(lines)
 
 
-def params_summary():
-    """Operational parameters (no secrets) for the /params chat command."""
+# The global defaults every chat inherits until it overrides a value with /set.
+# Per-chat overrides live in the DB (see SentryEventHandler.effective_rules).
+DEFAULT_RULES = {
+    "ongoing_sec":             ONGOING_INTERVAL_SEC,
+    "critical_window_sec":     CRITICAL_WINDOW_SEC,
+    "critical_threshold":      CRITICAL_ERROR_THRESHOLD,
+    "affected_user_threshold": AFFECTED_USER_THRESHOLD,
+    "critical_ratelimit_sec":  CRITICAL_RATELIMIT_SEC,
+    "stat_windows":            list(STAT_WINDOWS),
+    "statuses":                None,     # None = all (new/ongoing/escalating)
+}
+
+# The three alert statuses a chat can opt in/out of.
+ALERT_STATUSES = ("new", "ongoing", "escalating")
+
+
+def rules_summary(r):
+    """Format one chat's effective trigger rules (a dict shaped like DEFAULT_RULES)."""
+    statuses = r.get("statuses")
     return "\n".join([
-        "ongoing (min gap):        %gh" % WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR,
-        "critical window:          %gm" % WINDOW_CRITICAL_INTERVAL_IN_MINUTE,
-        "critical error threshold: >%d" % CRITICAL_ERROR_THRESHOLD,
-        "affected user threshold:  >=%d" % AFFECTED_USER_THRESHOLD,
-        "critical rate limit:      1 / %gh" % WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR,
-        "stat windows (line 2):    %s" % "/".join(_wlabel(w) for w in STAT_WINDOWS),
+        "ongoing (min gap):        %s" % fmt_duration(r["ongoing_sec"]),
+        "critical window:          %s" % fmt_duration(r["critical_window_sec"]),
+        "critical error threshold: >%d" % r["critical_threshold"],
+        "affected user threshold:  >=%d" % r["affected_user_threshold"],
+        "critical rate limit:      1 / %s" % fmt_duration(r["critical_ratelimit_sec"]),
+        "stat windows (line 2):    %s" % "/".join(fmt_duration(w) for w in r["stat_windows"]),
+        "statuses:                 %s" % ("all" if not statuses else "/".join(
+            s for s in ALERT_STATUSES if s in statuses)),
+    ])
+
+
+def params_summary(rules=None):
+    """Operational parameters (no secrets) for the /params chat command.
+    Pass a chat's effective rules to show its overrides; defaults otherwise."""
+    return "\n".join([
+        rules_summary(rules or DEFAULT_RULES),
         "mute max:                 issue %dd · project %dd" % (MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS),
         "keyword min interval:     %ds" % KEYWORD_MIN_INTERVAL_SEC,
         "llm:                      enabled=%s model=%s max_tokens=%d" % (

@@ -1,13 +1,24 @@
 # sentry-telegram
 
-Receives Sentry webhooks and posts errors to a Telegram chat/forum topic, with an
-intentional trigger model (new / ongoing / critical), interactive control from the chat
-(mute, per-project mute, keyword force-send), and an optional LLM cause/fix enriched with
-the real source, author (git blame) and the diff that last touched the crash line.
-All state is in SQLite, so everything survives restarts.
+Receives Sentry webhooks and posts errors to **any** Telegram chat/forum topic that
+subscribes, with an intentional trigger model (new / ongoing / critical), interactive
+control from the chat (mute, per-project mute, keyword force-send), and an optional LLM
+cause/fix enriched with the real source, author (git blame) and the diff that last touched
+the crash line. All state is in SQLite, so everything survives restarts.
 
-Send `/start` to the bot in the target chat/topic and it replies with the
-`chat id` (and `message_thread_id`) to put in `TELEGRAM_CHAT_ID` (use `chatid:thread`).
+## Subscriptions (per chat, opt-in)
+
+Add the bot to any chat/topic. **By default it sends nothing** — each chat opts in:
+
+- `/subscribe <project|all>` — receive alerts for a project (numeric id, name, or `all`).
+  `/unsubscribe …`, `/subscriptions`, and `/projects` (all projects, ✅ = subscribed).
+- `/alerts <new ongoing escalating | all>` — which statuses this chat wants (default: all).
+- `/set <param> <value>` — **this chat's own** trigger rules (`/set reset` to clear,
+  `/params` to view). Every chat has its own rules and its own send state.
+
+The optional `TELEGRAM_CHAT_ID` is seeded once as *subscribed to all projects*, so an
+existing single-chat deployment keeps working; new chats start empty. Send `/start` in a
+chat/topic and the bot replies with its `chat id` / `message_thread_id`.
 
 ## Layout
 
@@ -15,8 +26,8 @@ Send `/start` to the bot in the target chat/topic and it replies with the
 |---|---|
 | `config.py` | `.env` loading, settings, startup `banner()` / `params_summary()` |
 | `utils.py` | shared helpers (`esc`) |
-| `chat_bot_handler.py` | Telegram app: sending + commands (`/start /help /params /status /mute /mute_project /watch`) |
-| `sentry_event_handler.py` | verify, parse, trigger decision, mutes/keywords, format, GitLab, LLM |
+| `chat_bot_handler.py` | Telegram app: sending + commands (`/subscribe /alerts /set /status /mute …`) |
+| `sentry_event_handler.py` | verify, parse, per-chat subscriptions/rules/decision, mutes/keywords, format, GitLab, LLM |
 | `controller.py` | FastAPI app: endpoints + lifespan wiring |
 | `main.py` | entry point |
 
@@ -32,6 +43,10 @@ The debounce/spike model was replaced by an ops-driven one. An issue produces an
 
 Precedence: new > critical > ongoing. Affected-user counting needs a user in the event
 (`user.ip_address`/`id`/… or the `user` tag). LLM analysis runs **only for escalating alerts in prod**.
+
+These are **defaults**. Each subscribed chat can override its own thresholds, windows and
+which statuses it receives (see the `/set` / `/alerts` commands below); occurrence counts
+are global (per issue), but the ongoing gap and critical rate-limit are tracked per chat.
 
 ## Message format
 
@@ -63,13 +78,17 @@ under Telegram's default privacy mode (no BotFather change).
 
 | Command | What |
 |---|---|
-| `/help` · `/params` | list commands · current parameter values |
+| `/help` · `/params` | list commands · **this chat's** effective parameter values |
+| `/subscribe <project\|all>` · `/unsubscribe <…>` | opt this chat in/out of a project's alerts |
+| `/subscriptions` · `/projects` | this chat's subscriptions · all projects (✅ = subscribed) |
+| `/alerts <new ongoing escalating\|all>` | which statuses this chat receives (default all) |
+| `/set <param> <value>` · `/set reset` | this chat's rules: `ongoing`, `critical_window`, `critical_threshold`, `affected_users`, `critical_ratelimit`, `stat_windows` |
 | `/status <id>` | issue state: counts, last alert, mute |
 | `/ai <id>` | ask the LLM for cause/fix on demand (reuses cache; works for any alerted issue) |
 | `/mute <id> <days>` | snooze an issue (max `MUTE_MAX_DAYS`=7). Or **reply to an alert** with `/mute <days>` |
 | `/unmute <id>` · `/muted` | remove an issue mute · list muted issues |
 | `/mute_project <project> <days>` | mute a whole project (max `PROJECT_MUTE_MAX_DAYS`=15) |
-| `/unmute_project <project>` · `/projects` | remove a project mute · list projects + mute state |
+| `/unmute_project <project>` | remove a project mute (`/projects` shows mute state) |
 | `/watch add\|del <text> [project]` · `/watched` | keyword force-send (global or per-project) |
 | `/map <vcs_author> @<tg>` · `/map del\|list` | map a commit author to a Telegram handle |
 
@@ -146,6 +165,12 @@ remove the docker subnet (`172.16.0.0/12` and its IPv6 twin) from `SENTRY_DISALL
 `sentry.conf.py`, and add the notifier host to the sender's `NO_PROXY`.
 
 Every `POST /webhook` is logged on arrival, with a warning on bad signature / bad JSON.
+
+**Telegram 409 `Conflict` (getUpdates vs webhook).** `getUpdates` (long-polling) and a
+Telegram webhook can't both be active. On startup the bot deletes any registered webhook
+before polling (verified with a short retry loop). If you intentionally run the `/telegram`
+webhook instead, set `TELEGRAM_POLLING=false` so it never calls `getUpdates`. A stubborn 409
+usually means a **second instance** is polling the same bot token — stop the duplicate.
 
 ## Run as a service (systemd)
 

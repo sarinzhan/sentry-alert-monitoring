@@ -7,6 +7,7 @@ Responsibilities:
   - send outgoing messages (used by the Sentry path too)
 """
 import ssl
+import asyncio
 import datetime
 
 from telegram import Update
@@ -17,13 +18,22 @@ from telegram.request import HTTPXRequest
 
 from config import (
     CHAT_ID, CHAT_THREAD_ID, TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE,
-    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, STAT_WINDOWS, params_summary, log,
+    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, STAT_WINDOWS, ALERT_STATUSES,
+    params_summary, parse_duration, log,
 )
 from utils import esc
 
 
 HELP_TEXT = (
-    "<b>Команды</b>\n"
+    "<b>Подписки этого чата</b>\n"
+    "<code>/subscribe &lt;проект|all&gt;</code> · <code>/unsubscribe &lt;проект|all&gt;</code> — "
+    "подписать/отписать этот чат (по умолчанию алерты не приходят)\n"
+    "<code>/subscriptions</code> · <code>/projects</code> — подписки чата · все проекты\n"
+    "<code>/alerts &lt;new ongoing escalating|all&gt;</code> — какие статусы получать (по умолч. все)\n"
+    "<code>/set &lt;параметр&gt; &lt;значение&gt;</code> · <code>/set reset</code> — правила этого чата "
+    "(<code>/params</code> — текущие). Параметры: ongoing, critical_window, "
+    "critical_threshold, affected_users, critical_ratelimit, stat_windows\n"
+    "<b>Ошибки</b>\n"
     "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт, мьют)\n"
     "<code>/ai &lt;id&gt;</code> — спросить AI: причина и фикс\n"
     "<code>/mute &lt;id&gt; &lt;дней&gt;</code> — отсрочить ошибку (макс "
@@ -31,12 +41,21 @@ HELP_TEXT = (
     "<code>/unmute &lt;id&gt;</code> · <code>/muted</code> — снять мьют · список замьюченных\n"
     "<code>/mute_project &lt;проект&gt; &lt;дней&gt;</code> — отключить проект (макс "
     f"{PROJECT_MUTE_MAX_DAYS} дн.)\n"
-    "<code>/unmute_project &lt;проект&gt;</code> · <code>/projects</code> — снять · список проектов\n"
+    "<code>/unmute_project &lt;проект&gt;</code> — снять мьют проекта\n"
     "<code>/watch add|del &lt;текст&gt; [проект]</code> · <code>/watched</code> — force-send по тексту\n"
     "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code> · <code>/map del|list</code> — автор коммита → Telegram\n"
-    "<code>/params</code> — текущие значения параметров\n"
     "<b>id</b> — короткий код <code>#abcdef</code> из строки 2 алерта."
 )
+
+# /set <name> -> (chat_rules column, value parser). Mirrors the /params lines.
+RULE_KEYS = {
+    "ongoing":            ("ongoing_sec", "duration"),
+    "critical_window":    ("critical_window_sec", "duration"),
+    "critical_threshold": ("critical_threshold", "int"),
+    "affected_users":     ("affected_user_threshold", "int"),
+    "critical_ratelimit": ("critical_ratelimit_sec", "duration"),
+    "stat_windows":       ("stat_windows", "windows"),
+}
 
 
 def _fmt_ts(ts):
@@ -97,6 +116,12 @@ class ChatBotHandler:
         self._sentry = sentry
         self.app.add_handler(CommandHandler("help", self.on_help))
         self.app.add_handler(CommandHandler("params", self.on_params))
+        self.app.add_handler(CommandHandler("subscribe", self.on_subscribe))
+        self.app.add_handler(CommandHandler("unsubscribe", self.on_unsubscribe))
+        self.app.add_handler(CommandHandler("subscriptions", self.on_subscriptions))
+        self.app.add_handler(CommandHandler("subs", self.on_subscriptions))
+        self.app.add_handler(CommandHandler("alerts", self.on_alerts))
+        self.app.add_handler(CommandHandler("set", self.on_set))
         self.app.add_handler(CommandHandler("status", self.on_status))
         self.app.add_handler(CommandHandler("ai", self.on_ai))
         self.app.add_handler(CommandHandler("mute", self.on_mute))
@@ -119,10 +144,34 @@ class ChatBotHandler:
         await self.app.start()
         log.info("telegram bot ok: @%s", self.bot.username)
         if polling:
-            # drop any existing webhook so getUpdates won't 409, then long-poll
-            await self.bot.delete_webhook(drop_pending_updates=False)
-            await self.app.updater.start_polling(allowed_updates=["message", "channel_post"])
+            await self._clear_webhook()
+            # drop_pending_updates so a backlog delivered to the old webhook isn't replayed
+            await self.app.updater.start_polling(
+                allowed_updates=["message", "channel_post"], drop_pending_updates=True)
             log.info("telegram polling on")
+
+    async def _clear_webhook(self):
+        """Ensure no webhook is registered before long-polling.
+
+        getUpdates and a webhook can't both be active — Telegram returns 409 Conflict
+        ("can't use getUpdates method while webhook is active"). A single delete can lose
+        the race (or silently fail behind a proxy), so verify and retry a few times.
+        """
+        for attempt in range(1, 6):
+            try:
+                info = await self.bot.get_webhook_info()
+                if not info.url:
+                    if attempt > 1:
+                        log.info("telegram webhook cleared")
+                    return
+                log.warning("telegram webhook active (%s); deleting to enable polling (try %d)",
+                            info.url, attempt)
+                await self.bot.delete_webhook(drop_pending_updates=True)
+            except TelegramError as e:
+                log.error("telegram delete_webhook failed (try %d): %s", attempt, e)
+            await asyncio.sleep(1)
+        log.error("telegram webhook still set after retries — polling may 409. "
+                  "Set TELEGRAM_POLLING=false to use the /telegram webhook instead.")
 
     async def stop(self):
         if self.app.updater and self.app.updater.running:
@@ -143,9 +192,14 @@ class ChatBotHandler:
         """
         if message_thread_id is _UNSET:
             message_thread_id = self._default_thread_id
+        target = chat_id if chat_id is not None else self._default_chat_id
+        if target is None:
+            # no explicit chat and no configured default (TELEGRAM_CHAT_ID deleted)
+            log.error("telegram send skipped: no chat_id and no default configured")
+            return None
         try:
             return await self.bot.send_message(
-                chat_id=chat_id if chat_id is not None else self._default_chat_id,
+                chat_id=target,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
@@ -195,19 +249,32 @@ class ChatBotHandler:
         except TelegramError as e:
             log.error("command reply failed: %s", e)
 
+    @staticmethod
+    def _chat_of(update: Update):
+        """(chat_id, thread_id) of the incoming command; thread only for forum topics."""
+        msg = update.effective_message
+        chat_id = update.effective_chat.id
+        thread_id = msg.message_thread_id if (msg and msg.is_topic_message) else None
+        return chat_id, thread_id
+
     async def on_help(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await self._reply(update, HELP_TEXT)
 
     async def on_params(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await self._reply(update, "<b>Параметры</b>\n<pre>" + esc(params_summary()) + "</pre>")
+        chat_id, _ = self._chat_of(update)
+        rules = self._sentry.effective_rules(chat_id)
+        await self._reply(update, "<b>Параметры этого чата</b>\n<pre>"
+                          + esc(params_summary(rules)) + "</pre>")
 
     async def on_status(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not ctx.args:
             return await self._reply(update, "Использование: <code>/status &lt;id&gt;</code>")
-        info = self._sentry.issue_status(ctx.args[0])
+        chat_id, _ = self._chat_of(update)
+        windows = self._sentry.effective_rules(chat_id)["stat_windows"]
+        info = self._sentry.issue_status(ctx.args[0], windows)
         if not info:
             return await self._reply(update, f"Ошибка <code>{esc(ctx.args[0])}</code> не найдена.")
-        labels = "/".join(_win_label(w) for w in STAT_WINDOWS)
+        labels = "/".join(_win_label(w) for w in windows)
         counts = "/".join(str(c) for c in info["counts"])
         title = esc(info.get("title") or "?")
         title = f'<a href="{esc(info["url"])}">{title}</a>' if info.get("url") else title
@@ -299,13 +366,115 @@ class ChatBotHandler:
         if not rows:
             return await self._reply(update, "Проекты не сконфигурированы "
                                              "(SENTRY_PROJECTS / GITLAB_PROJECTS).")
-        lines = ["<b>Проекты:</b>"]
+        chat_id, _ = self._chat_of(update)
+        subs = set(self._sentry.list_subscriptions(chat_id))
+        all_sub = "*" in subs
+        lines = ["<b>Проекты</b> (✅ = этот чат подписан):"]
         for r in rows:
             name = esc(r["name"] or "?")
             repo = f" → <code>{esc(r['repo'])}</code>" if r["repo"] else ""
             mute = f" · 🔕 до {_fmt_ts(r['muted_until'])}" if r["muted_until"] else ""
-            lines.append(f"<code>{esc(r['id'])}</code> {name}{repo}{mute}")
+            mark = "✅ " if (all_sub or str(r["id"]) in subs or (r["name"] and r["name"] in subs)) else ""
+            lines.append(f"{mark}<code>{esc(r['id'])}</code> {name}{repo}{mute}")
+        lines.append("\nПодписаться: <code>/subscribe &lt;id|имя|all&gt;</code>")
         await self._reply(update, "\n".join(lines))
+
+    # ------------------------------------------------- per-chat subscriptions
+    async def on_subscribe(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        by = update.effective_user.full_name if update.effective_user else "?"
+        if not ctx.args:
+            return await self._reply(update, "Использование: <code>/subscribe &lt;проект|all&gt;</code> "
+                                             "(id, имя или <code>all</code>). Список: <code>/projects</code>")
+        chat_id, thread_id = self._chat_of(update)
+        done = []
+        for a in ctx.args:
+            proj = "*" if a.lower() in ("all", "*", "все") else a
+            if self._sentry.subscribe(chat_id, proj, thread_id, by):
+                done.append("все проекты" if proj == "*" else proj)
+        where = " (тема этой ветки)" if thread_id else ""
+        await self._reply(update, f"✅ Подписка добавлена: <b>{esc(', '.join(done))}</b>{where}. "
+                                  f"Статусы: используйте <code>/alerts</code>, правила: <code>/params</code>.")
+
+    async def on_unsubscribe(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if not ctx.args:
+            return await self._reply(update, "Использование: <code>/unsubscribe &lt;проект|all&gt;</code>")
+        chat_id, _ = self._chat_of(update)
+        n = 0
+        for a in ctx.args:
+            proj = "*" if a.lower() in ("all", "*", "все") else a
+            n += self._sentry.unsubscribe(chat_id, proj)
+        await self._reply(update, f"Отписка: удалено записей — {n}." if n
+                          else "Таких подписок не найдено.")
+
+    async def on_subscriptions(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        chat_id, _ = self._chat_of(update)
+        subs = self._sentry.list_subscriptions(chat_id)
+        if not subs:
+            return await self._reply(update, "Этот чат не подписан ни на один проект. "
+                                             "<code>/subscribe &lt;проект|all&gt;</code>")
+        body = "\n".join("• все проекты" if s == "*" else f"• <code>{esc(s)}</code>" for s in subs)
+        rules = self._sentry.effective_rules(chat_id)
+        st = "all" if not rules.get("statuses") else "/".join(
+            s for s in ALERT_STATUSES if s in rules["statuses"])
+        await self._reply(update, f"<b>Подписки этого чата:</b>\n{body}\n\nСтатусы: <b>{esc(st)}</b>")
+
+    async def on_alerts(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        chat_id, _ = self._chat_of(update)
+        if not ctx.args:
+            rules = self._sentry.effective_rules(chat_id)
+            st = "all" if not rules.get("statuses") else "/".join(
+                s for s in ALERT_STATUSES if s in rules["statuses"])
+            return await self._reply(update, f"Текущие статусы: <b>{esc(st)}</b>\n"
+                                     "Изменить: <code>/alerts new ongoing escalating</code> или "
+                                     "<code>/alerts all</code>.")
+        toks = [a.lower() for a in ctx.args]
+        if "all" in toks:
+            self._sentry.set_statuses(chat_id, None)
+            return await self._reply(update, "✅ Этот чат получает <b>все</b> статусы.")
+        picked = {t for t in toks if t in ALERT_STATUSES}
+        if not picked:
+            return await self._reply(update, "Допустимо: <code>new</code>, <code>ongoing</code>, "
+                                     "<code>escalating</code> или <code>all</code>.")
+        self._sentry.set_statuses(chat_id, picked)
+        await self._reply(update, "✅ Статусы этого чата: <b>"
+                          + esc("/".join(s for s in ALERT_STATUSES if s in picked)) + "</b>.")
+
+    async def on_set(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        chat_id, _ = self._chat_of(update)
+        args = ctx.args
+        if args and args[0].lower() == "reset":
+            self._sentry.reset_rules(chat_id)
+            return await self._reply(update, "✅ Правила этого чата сброшены к значениям по умолчанию.")
+        if len(args) < 2 or args[0] not in RULE_KEYS:
+            keys = ", ".join(f"<code>{esc(k)}</code>" for k in RULE_KEYS)
+            return await self._reply(update, "Использование: <code>/set &lt;параметр&gt; &lt;значение&gt;</code> "
+                                     f"или <code>/set reset</code>.\nПараметры: {keys}\n"
+                                     "Примеры: <code>/set ongoing 12h</code> · "
+                                     "<code>/set critical_threshold 15</code> · "
+                                     "<code>/set stat_windows 12h/6h/10m</code>")
+        column, kind = RULE_KEYS[args[0]]
+        raw = args[1]
+        if kind == "duration":
+            val = parse_duration(raw)
+            if val is None or val <= 0:
+                return await self._reply(update, "Нужна длительность, напр. <code>12h</code>, "
+                                         "<code>10m</code>, <code>30s</code>.")
+        elif kind == "int":
+            try:
+                val = int(raw)
+                assert val >= 0
+            except (ValueError, AssertionError):
+                return await self._reply(update, "Нужно неотрицательное целое число.")
+        else:  # windows: "12h/6h/10m"
+            parts = [parse_duration(x) for x in raw.replace(",", "/").split("/") if x.strip()]
+            if len(parts) != 3 or any(v is None or v <= 0 for v in parts):
+                return await self._reply(update, "Нужно ровно 3 окна, напр. "
+                                         "<code>12h/6h/10m</code>.")
+            val = ",".join(str(v) for v in parts)
+        self._sentry.set_rule(chat_id, column, val)
+        rules = self._sentry.effective_rules(chat_id)
+        await self._reply(update, f"✅ <code>{esc(args[0])}</code> обновлён для этого чата.\n<pre>"
+                          + esc(params_summary(rules)) + "</pre>")
 
     async def _list_keywords_reply(self, update):
         rows = self._sentry.list_keywords()

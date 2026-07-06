@@ -8,11 +8,14 @@ Run on a server:
 """
 import uvicorn
 
-from config import BOT_TOKEN, CHAT_ID, HOST, PORT
+from config import BOT_TOKEN, HOST, PORT
 from controller import app
 
 
 if __name__ == "__main__":
-    if not BOT_TOKEN or not CHAT_ID:
-        raise SystemExit("set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID (in .env or env)")
+    # TELEGRAM_CHAT_ID is optional now: alerts are opt-in per chat (/subscribe).
+    # If it's set, it's seeded once as "subscribed to all"; if it's deleted, chats
+    # simply self-subscribe. Only the bot token is truly required.
+    if not BOT_TOKEN:
+        raise SystemExit("set TELEGRAM_BOT_TOKEN (in .env or env)")
     uvicorn.run(app, host=HOST, port=PORT)

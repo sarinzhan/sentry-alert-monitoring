@@ -20,7 +20,8 @@ import urllib.parse
 import httpx
 
 from config import (
-    CLIENT_SECRET, DB_PATH, STAT_WINDOWS,
+    CLIENT_SECRET, DB_PATH, STAT_WINDOWS, CHAT_ID, CHAT_THREAD_ID,
+    DEFAULT_RULES, ALERT_STATUSES,
     ONGOING_INTERVAL_SEC, CRITICAL_WINDOW_SEC, CRITICAL_RATELIMIT_SEC,
     CRITICAL_ERROR_THRESHOLD, AFFECTED_USER_THRESHOLD,
     MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, KEYWORD_MIN_INTERVAL_SEC,
@@ -159,6 +160,42 @@ class SentryEventHandler:
             self._db.execute("ALTER TABLE analysis_cache ADD COLUMN cost REAL")
         except sqlite3.OperationalError:
             pass
+
+        # --- multi-chat: each chat subscribes to projects and owns its trigger rules ---
+        # which projects a chat receives (project='*' = all); thread_id = forum topic.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS chat_subscription ("
+            " chat_id TEXT NOT NULL, project TEXT NOT NULL, thread_id TEXT,"
+            " by TEXT, at REAL, PRIMARY KEY (chat_id, project))"
+        )
+        # per-chat trigger-rule overrides; any NULL column falls back to the global default.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS chat_rules ("
+            " chat_id TEXT PRIMARY KEY, statuses TEXT, ongoing_sec INTEGER,"
+            " critical_window_sec INTEGER, critical_threshold INTEGER,"
+            " affected_user_threshold INTEGER, critical_ratelimit_sec INTEGER,"
+            " stat_windows TEXT)"
+        )
+        # per (chat, issue) send state, so the ongoing gap + critical rate limit are per chat.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS chat_issue_state ("
+            " chat_id TEXT NOT NULL, issue_id TEXT NOT NULL,"
+            " last_sent REAL NOT NULL DEFAULT 0, last_critical REAL NOT NULL DEFAULT 0,"
+            " step INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, issue_id))"
+        )
+        # tiny key/value table for one-time migration flags
+        self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        # One-time seed: keep the pre-configured TELEGRAM_CHAT_ID working by subscribing
+        # it to all projects. New chats start with no subscriptions (opt-in).
+        if CHAT_ID and not self._db.execute(
+                "SELECT 1 FROM meta WHERE key='seeded'").fetchone():
+            self._db.execute(
+                "INSERT OR IGNORE INTO chat_subscription(chat_id, project, thread_id, by, at) "
+                "VALUES (?, '*', ?, 'seed', ?)",
+                (str(CHAT_ID), str(CHAT_THREAD_ID) if CHAT_THREAD_ID is not None else None,
+                 time.time()))
+            self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('seeded', '1')")
+            log.info("seeded default subscription: chat=%s -> all projects", CHAT_ID)
         self._db.commit()
         self._lock = asyncio.Lock()
         self._prompt_logged = True   # log the LLM prompt once, so you can inspect it
@@ -206,89 +243,207 @@ class SentryEventHandler:
         return hashlib.sha1(str(issue_id).encode()).hexdigest()[:6]
 
     # -------------------------------------------------- counting + send decision
-    async def register_and_decide(self, issue_id, title, usr=None, muted=False, forced=False):
-        """
-        Record this occurrence, then decide whether to send and with what status.
-        Returns (send, status, counts over STAT_WINDOWS, short). Under a lock so
-        concurrent webhooks for the same issue can't race the state.
-
-        status: new | ongoing (>=12h since last) | escalating (critical spike/users)
-        muted:  suppress unless forced by a keyword.  forced: keyword force-send.
-        """
+    async def register_event(self, issue_id, usr=None):
+        """Record one occurrence globally (issue-level, shared by all chats) and prune."""
         now = time.time()
         async with self._lock:
             self._db.execute("INSERT INTO event_log (issue_id, ts, usr) VALUES (?, ?, ?)",
                              (issue_id, now, usr))
             self._db.execute("DELETE FROM event_log WHERE ts < ?", (now - self.PRUNE_HORIZON,))
-
-            counts = [
-                self._db.execute(
-                    "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, now - w)
-                ).fetchone()[0]
-                for w in STAT_WINDOWS
-            ]
-
-            row = self._db.execute(
-                "SELECT last_sent, step, short, last_critical FROM issue_state WHERE issue_id=?",
-                (issue_id,),
-            ).fetchone()
-
-            if row is None:                                   # first time we see this issue
-                short = self._short(issue_id)
-                if muted and not forced:                      # remember it, but don't send
-                    self._db.execute(
-                        "INSERT INTO issue_state(issue_id, last_sent, step, last_critical, short, title, updated) "
-                        "VALUES (?, 0, 0, 0, ?, ?, ?)", (issue_id, short, title, now))
-                    self._db.commit()
-                    return False, None, counts, short
-                self._db.execute(
-                    "INSERT INTO issue_state(issue_id, last_sent, step, last_critical, short, title, updated) "
-                    "VALUES (?, ?, 1, 0, ?, ?, ?)", (issue_id, now, short, title, now))
-                self._db.commit()
-                return True, "new", counts, short
-
-            last_sent, step, short, last_critical = row
-            if muted and not forced:
-                self._db.commit()
-                return False, None, counts, short
-
-            since = now - CRITICAL_WINDOW_SEC
-            crit_count = self._db.execute(
-                "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, since)
-            ).fetchone()[0]
-            crit_users = self._db.execute(
-                "SELECT COUNT(DISTINCT usr) FROM event_log WHERE issue_id=? AND ts>=? AND usr IS NOT NULL",
-                (issue_id, since),
-            ).fetchone()[0]
-            is_critical = (crit_count > CRITICAL_ERROR_THRESHOLD) or (crit_users >= AFFECTED_USER_THRESHOLD)
-            critical_allowed = is_critical and (now - (last_critical or 0)) >= CRITICAL_RATELIMIT_SEC
-            ongoing_ok = (now - last_sent) >= ONGOING_INTERVAL_SEC
-
-            if critical_allowed:
-                status = "escalating"
-            elif ongoing_ok:
-                status = "ongoing"
-            else:
-                status = None
-
-            if forced and status is None:                     # keyword force-send
-                if KEYWORD_MIN_INTERVAL_SEC and (now - last_sent) < KEYWORD_MIN_INTERVAL_SEC:
-                    self._db.commit()
-                    return False, None, counts, short
-                status = "ongoing"
-
-            if status is None:
-                self._db.commit()
-                return False, None, counts, short
-
-            self._db.execute(
-                "UPDATE issue_state SET last_sent=?, step=?, last_critical=?, title=?, updated=? "
-                "WHERE issue_id=?",
-                (now, step + 1, now if status == "escalating" else (last_critical or 0),
-                 title, now, issue_id),
-            )
             self._db.commit()
-            return True, status, counts, short
+
+    def counts_for(self, issue_id, windows, now=None):
+        """Occurrence counts for an issue over the given windows (seconds)."""
+        now = now or time.time()
+        return [self._db.execute(
+            "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, now - w)
+        ).fetchone()[0] for w in windows]
+
+    def _crit_stats(self, issue_id, window_sec, now):
+        """(occurrences, distinct affected users) for an issue over the critical window."""
+        since = now - window_sec
+        cnt = self._db.execute(
+            "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, since)
+        ).fetchone()[0]
+        usrs = self._db.execute(
+            "SELECT COUNT(DISTINCT usr) FROM event_log WHERE issue_id=? AND ts>=? AND usr IS NOT NULL",
+            (issue_id, since),
+        ).fetchone()[0]
+        return cnt, usrs
+
+    def ensure_issue(self, issue_id, title):
+        """Upsert issue metadata (stable short id + title) used by /status, /mute, /ai.
+        Returns the short id. Does not touch send-state (that is now per chat)."""
+        short = self._short(issue_id)
+        row = self._db.execute("SELECT 1 FROM issue_state WHERE issue_id=?", (issue_id,)).fetchone()
+        now = time.time()
+        if row:
+            self._db.execute("UPDATE issue_state SET title=?, updated=? WHERE issue_id=?",
+                             (title, now, issue_id))
+        else:
+            self._db.execute(
+                "INSERT INTO issue_state(issue_id, last_sent, step, last_critical, short, title, updated) "
+                "VALUES (?, 0, 0, 0, ?, ?, ?)", (issue_id, short, title, now))
+        self._db.commit()
+        return short
+
+    def mark_issue_sent(self, issue_id, now, critical=False):
+        """Bump the issue's global last_sent (for /status), independent of which chat sent."""
+        self._db.execute(
+            "UPDATE issue_state SET last_sent=?, step=step+1, updated=?"
+            + (", last_critical=?" if critical else "") + " WHERE issue_id=?",
+            ((now, now, now, issue_id) if critical else (now, now, issue_id)))
+        self._db.commit()
+
+    # --------------------------------------------------------- per-chat rules
+    def effective_rules(self, chat_id):
+        """A chat's trigger rules: its overrides layered over the global DEFAULT_RULES."""
+        r = dict(DEFAULT_RULES)
+        r["stat_windows"] = list(DEFAULT_RULES["stat_windows"])
+        row = self._db.execute(
+            "SELECT statuses, ongoing_sec, critical_window_sec, critical_threshold,"
+            " affected_user_threshold, critical_ratelimit_sec, stat_windows"
+            " FROM chat_rules WHERE chat_id=?", (str(chat_id),)).fetchone()
+        if not row:
+            return r
+        statuses, ongoing, cwin, cthr, athr, crl, swins = row
+        if statuses is not None:
+            r["statuses"] = set(x for x in statuses.split(",") if x)
+        if ongoing is not None: r["ongoing_sec"] = ongoing
+        if cwin is not None:    r["critical_window_sec"] = cwin
+        if cthr is not None:    r["critical_threshold"] = cthr
+        if athr is not None:    r["affected_user_threshold"] = athr
+        if crl is not None:     r["critical_ratelimit_sec"] = crl
+        if swins:
+            wins = [int(x) for x in swins.split(",") if x.strip().isdigit()]
+            if wins:
+                r["stat_windows"] = wins
+        return r
+
+    _RULE_COLUMNS = {"ongoing_sec", "critical_window_sec", "critical_threshold",
+                     "affected_user_threshold", "critical_ratelimit_sec", "stat_windows"}
+
+    def set_rule(self, chat_id, column, value):
+        """Set one per-chat rule override (column must be in _RULE_COLUMNS)."""
+        if column not in self._RULE_COLUMNS:
+            return False
+        chat_id = str(chat_id)
+        self._db.execute("INSERT OR IGNORE INTO chat_rules(chat_id) VALUES (?)", (chat_id,))
+        self._db.execute(f"UPDATE chat_rules SET {column}=? WHERE chat_id=?", (value, chat_id))
+        self._db.commit()
+        return True
+
+    def set_statuses(self, chat_id, statuses):
+        """Set which alert statuses a chat receives. statuses=None -> all."""
+        chat_id = str(chat_id)
+        csv = None if not statuses else ",".join(s for s in ALERT_STATUSES if s in statuses)
+        self._db.execute("INSERT OR IGNORE INTO chat_rules(chat_id) VALUES (?)", (chat_id,))
+        self._db.execute("UPDATE chat_rules SET statuses=? WHERE chat_id=?", (csv, chat_id))
+        self._db.commit()
+        return True
+
+    def reset_rules(self, chat_id):
+        """Drop all per-chat rule overrides (back to global defaults). Keeps statuses/subs."""
+        self._db.execute(
+            "UPDATE chat_rules SET ongoing_sec=NULL, critical_window_sec=NULL,"
+            " critical_threshold=NULL, affected_user_threshold=NULL,"
+            " critical_ratelimit_sec=NULL, stat_windows=NULL WHERE chat_id=?", (str(chat_id),))
+        self._db.commit()
+
+    # ------------------------------------------------------ subscriptions
+    def subscribe(self, chat_id, project, thread_id=None, by=None):
+        """Subscribe a chat to a project id/slug (or '*' for all). Records where to post."""
+        project = str(project).strip().lstrip("#")
+        if not project:
+            return False
+        self._db.execute(
+            "INSERT OR REPLACE INTO chat_subscription(chat_id, project, thread_id, by, at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (str(chat_id), project, str(thread_id) if thread_id is not None else None,
+             by, time.time()))
+        self._db.commit()
+        return True
+
+    def unsubscribe(self, chat_id, project):
+        project = str(project).strip().lstrip("#")
+        cur = self._db.execute("DELETE FROM chat_subscription WHERE chat_id=? AND project=?",
+                               (str(chat_id), project))
+        self._db.commit()
+        return cur.rowcount
+
+    def list_subscriptions(self, chat_id):
+        return [r[0] for r in self._db.execute(
+            "SELECT project FROM chat_subscription WHERE chat_id=? ORDER BY project", (str(chat_id),)
+        ).fetchall()]
+
+    def subscribed_chats(self, *keys):
+        """Chats subscribed to any of the given project keys or to '*'.
+        Returns [(chat_id, thread_id)], de-duplicated per chat (prefers a topic thread)."""
+        cand = list(dict.fromkeys(str(k) for k in keys if k not in (None, ""))) + ["*"]
+        q = "SELECT chat_id, thread_id FROM chat_subscription WHERE project IN (%s)" % \
+            ",".join("?" * len(cand))
+        out = {}
+        for cid, tid in self._db.execute(q, cand).fetchall():
+            if cid not in out or (tid and not out[cid]):
+                out[cid] = tid
+        return list(out.items())
+
+    def decide_for_chat(self, chat_id, issue_id, rules, now, muted=False, forced=False):
+        """
+        Decide whether THIS chat should get an alert for this issue, using the chat's
+        own rules and its own (chat, issue) send-state. Returns (send, status).
+
+        status: new | ongoing (>= chat's min gap) | escalating (chat's critical spike).
+        muted:  global mute suppresses unless forced by a keyword.  forced: keyword force-send.
+        """
+        chat_id = str(chat_id)
+        statuses = rules.get("statuses")            # None = all
+
+        def allowed(s):
+            return forced or statuses is None or s in statuses
+
+        row = self._db.execute(
+            "SELECT last_sent, last_critical, step FROM chat_issue_state "
+            "WHERE chat_id=? AND issue_id=?", (chat_id, issue_id)).fetchone()
+        first_time = row is None
+        last_sent, last_critical, step = row or (0.0, 0.0, 0)
+
+        def remember(ls, lc, st):
+            self._db.execute(
+                "INSERT OR REPLACE INTO chat_issue_state(chat_id, issue_id, last_sent, last_critical, step) "
+                "VALUES (?, ?, ?, ?, ?)", (chat_id, issue_id, ls, lc, st))
+            self._db.commit()
+
+        if muted and not forced:
+            if first_time:
+                remember(0, 0, 0)                   # seen while muted -> not "new" later
+            return False, None
+
+        if first_time:
+            if allowed("new"):
+                remember(now, 0, 1)
+                return True, "new"
+            remember(0, 0, 0)                       # filtered: record so it can go "ongoing" later
+            return False, None
+
+        cnt, usrs = self._crit_stats(issue_id, rules["critical_window_sec"], now)
+        is_critical = (cnt > rules["critical_threshold"]) or (usrs >= rules["affected_user_threshold"])
+        critical_allowed = is_critical and (now - (last_critical or 0)) >= rules["critical_ratelimit_sec"]
+        ongoing_ok = (now - last_sent) >= rules["ongoing_sec"]
+
+        if critical_allowed and allowed("escalating"):
+            status = "escalating"
+        elif ongoing_ok and allowed("ongoing"):
+            status = "ongoing"
+        elif forced:                                # keyword force-send (bypasses gap + filter)
+            if KEYWORD_MIN_INTERVAL_SEC and (now - last_sent) < KEYWORD_MIN_INTERVAL_SEC:
+                return False, None
+            status = "ongoing"
+        else:
+            return False, None
+
+        remember(now, now if status == "escalating" else (last_critical or 0), step + 1)
+        return True, status
 
     # ------------------------------------------------------ commands data layer
     def store_sent(self, message_id, chat_id, issue_id, short, url, project):
@@ -326,14 +481,12 @@ class SentryEventHandler:
         return {"issue_id": row[0], "short": row[1], "title": row[2],
                 "project": row[3], "url": row[4]}
 
-    def issue_status(self, ref):
+    def issue_status(self, ref, windows=None):
         info = self.resolve_ref(ref)
         if not info:
             return None
         iid, now = info["issue_id"], time.time()
-        info["counts"] = [self._db.execute(
-            "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (iid, now - w)
-        ).fetchone()[0] for w in STAT_WINDOWS]
+        info["counts"] = self.counts_for(iid, windows or STAT_WINDOWS, now)
         st = self._db.execute(
             "SELECT last_sent, last_critical FROM issue_state WHERE issue_id=?", (iid,)
         ).fetchone() or (0, 0)
@@ -722,7 +875,8 @@ class SentryEventHandler:
         lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
         # line 2: <@telegram or vcs author> · <commit date-time> · counts (periods) · #<short>
         nums = "/".join(esc(c) for c in (p.get("counts") or []))
-        counts = f"{nums} ({STAT_LABELS})" if nums else ""
+        labels = p.get("stat_labels") or STAT_LABELS
+        counts = f"{nums} ({labels})" if nums else ""
         b = p.get("blame") or {}
         who = f"@{esc(b['tg'])}" if b.get("tg") else (esc(b["author"]) if b.get("author") else "")
         author = f"{who} · {esc(b.get('date') or '?')}" if who else ""
@@ -1085,25 +1239,30 @@ class SentryEventHandler:
             if p.get("action") not in NOTIFY_ACTIONS:
                 log.info("ignored action=%s issue=%s", p.get("action"), p["issue_id"])
                 return
+            now = time.time()
+            # record the occurrence globally + keep issue metadata (short id, title)
+            await self.register_event(p["issue_id"], p.get("usr"))
+            p["short"] = self.ensure_issue(p["issue_id"], p.get("title") or "")
+
             # keyword force-send bypasses debounce + mute; else respect mutes
             forced = self.keyword_match(f"{p.get('title') or ''} {p.get('value') or ''}", p) is not None
             muted = (not forced) and self.is_suppressed(p["issue_id"], p)
-            # record the occurrence, get counts, and decide send + status atomically
-            send, status, p["counts"], p["short"] = await self.register_and_decide(
-                p["issue_id"], p.get("title") or "", p.get("usr"), muted, forced)
-            if not send:
-                log.info("skip issue=%s counts=%s muted=%s", p["issue_id"], p["counts"], muted)
-                # debug: build + log the prompt for skipped events too
-                if LOG_LLM_PROMPT:
+
+            # who wants this project? (subscription by numeric id, slug, or '*'). No
+            # subscribers -> nothing to do (alerts are opt-in per chat).
+            raw_project = p.get("project")
+            p["project"] = await self.resolve_project(raw_project)      # id -> name for the header
+            targets = self.subscribed_chats(p.get("project_id"), raw_project, p.get("project"))
+            if not targets:
+                log.info("no subscribers issue=%s project=%s", p["issue_id"], p.get("project"))
+                if LOG_LLM_PROMPT:          # debug: still build+log the prompt if asked
                     p["_loc"] = await self.locate_source(p)
                     if p["_loc"]:
                         p["blame"] = await self.fetch_blame(p["_loc"])
-                    await self.analyze(p)     # logs the prompt; returns None while LLM off
+                    await self.analyze(p)
                 return
-            p["status"] = status
-            # numeric project id -> name (None falls back to "sentry" in the header)
-            p["project"] = await self.resolve_project(p.get("project"))
-            # locate the crash file once -> reused for blame (author, shown always) + source
+
+            # locate the crash file once -> reused for blame (author, shown always) + LLM
             p["_loc"] = await self.locate_source(p)
             if p["_loc"]:
                 p["blame"] = await self.fetch_blame(p["_loc"])
@@ -1111,14 +1270,52 @@ class SentryEventHandler:
                     p["blame"]["tg"] = self.map_lookup(p["blame"].get("author"))
             # save context so /ai can re-run the LLM on demand for this issue
             self.store_ctx(p)
-            # LLM cause/fix only for escalating alerts in prod
+
             is_prod = (p.get("environment") or "").lower() == "prod"
-            analysis = await self.analyze(p) if (status == "escalating" and is_prod) else None
-            msg = await self._send(self.build_message(p, analysis))
-            if msg is not None:
-                self.store_sent(msg.message_id, msg.chat_id, p["issue_id"],
-                                p["short"], p.get("url"), p.get("project"))
-            log.info("sent issue=%s status=%s counts=%s%s",
-                     p["issue_id"], status, p["counts"], " FORCED" if forced else "")
+            analysis, analysis_done = None, False        # LLM analysis computed at most once
+            sent = 0
+            for chat_id, thread_id in targets:
+                rules = self.effective_rules(chat_id)
+                async with self._lock:
+                    send, status = self.decide_for_chat(
+                        chat_id, p["issue_id"], rules, now, muted, forced)
+                if not send:
+                    continue
+                # LLM cause/fix only for escalating alerts in prod (computed once, reused)
+                show_llm = status == "escalating" and is_prod
+                if show_llm and not analysis_done:
+                    analysis = await self.analyze(p)          # sets p["llm_meta"]
+                    analysis_done = True
+                # per-chat view: counts over this chat's stat windows + matching labels.
+                # Only the escalating message carries the LLM analysis + its cost line.
+                pc = dict(p)
+                pc["status"] = status
+                pc["counts"] = self.counts_for(p["issue_id"], rules["stat_windows"], now)
+                pc["stat_labels"] = "/".join(_win_label(w) for w in rules["stat_windows"])
+                pc["llm_meta"] = p.get("llm_meta") if show_llm else None
+                msg = await self._send(
+                    self.build_message(pc, analysis if show_llm else None),
+                    chat_id=self._as_chat_id(chat_id),
+                    message_thread_id=int(thread_id) if thread_id else None)
+                if msg is not None:
+                    self.store_sent(msg.message_id, msg.chat_id, p["issue_id"],
+                                    p["short"], p.get("url"), p.get("project"))
+                    self.mark_issue_sent(p["issue_id"], now, critical=(status == "escalating"))
+                    sent += 1
+                    log.info("sent issue=%s chat=%s status=%s counts=%s%s",
+                             p["issue_id"], chat_id, status, pc["counts"],
+                             " FORCED" if forced else "")
+            if not sent:
+                log.info("skip issue=%s no chat triggered (targets=%d muted=%s)",
+                         p["issue_id"], len(targets), muted)
         except Exception as e:
             log.exception("process failed: %s", e)
+
+    @staticmethod
+    def _as_chat_id(chat_id):
+        """Telegram accepts int ids for groups/users and str for @channels."""
+        s = str(chat_id)
+        try:
+            return int(s)
+        except ValueError:
+            return s
