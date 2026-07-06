@@ -17,8 +17,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.request import HTTPXRequest
 
 from config import (
-    CHAT_ID, CHAT_THREAD_ID, TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE,
-    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, STAT_WINDOWS, ALERT_STATUSES,
+    TELEGRAM_CA_BUNDLE, TELEGRAM_SSL_INSECURE,
+    MUTE_MAX_DAYS, PROJECT_MUTE_MAX_DAYS, ALERT_STATUSES,
     params_summary, parse_duration, log,
 )
 from utils import esc
@@ -70,11 +70,6 @@ def _win_label(sec):
             return f"{sec // n}{unit}"
     return f"{sec}s"
 
-# sentinel so send() can tell "caller omitted thread" (use the default topic) apart
-# from "caller explicitly passed None" (post to the chat with no topic).
-_UNSET = object()
-
-
 def _build_ssl_context() -> ssl.SSLContext:
     """
     SSL context for talking to api.telegram.org, tolerant of corporate MITM proxies.
@@ -95,9 +90,7 @@ def _build_ssl_context() -> ssl.SSLContext:
 
 
 class ChatBotHandler:
-    def __init__(self, token: str, default_chat_id=CHAT_ID, default_thread_id=CHAT_THREAD_ID):
-        self._default_chat_id = default_chat_id
-        self._default_thread_id = default_thread_id
+    def __init__(self, token: str):
         ctx = _build_ssl_context()
         self.app = (
             Application.builder()
@@ -184,22 +177,17 @@ class ChatBotHandler:
         await self.app.process_update(Update.de_json(data, self.bot))
 
     # ------------------------------------------------------------- sending
-    async def send(self, text: str, chat_id=None, message_thread_id=_UNSET):
-        """Send one HTML message. Returns the sent Message, or None on failure.
+    async def send(self, text: str, chat_id, message_thread_id=None):
+        """Send one HTML message to an explicit chat. Returns the Message, or None.
 
-        Omit message_thread_id to fall back to the configured default topic;
-        pass None explicitly to force posting outside any topic.
+        message_thread_id targets a forum topic; None posts to the chat with no topic.
         """
-        if message_thread_id is _UNSET:
-            message_thread_id = self._default_thread_id
-        target = chat_id if chat_id is not None else self._default_chat_id
-        if target is None:
-            # no explicit chat and no configured default (TELEGRAM_CHAT_ID deleted)
-            log.error("telegram send skipped: no chat_id and no default configured")
+        if chat_id is None:
+            log.error("telegram send skipped: no chat_id given")
             return None
         try:
             return await self.bot.send_message(
-                chat_id=target,
+                chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
@@ -212,33 +200,22 @@ class ChatBotHandler:
     # ------------------------------------------------------------- commands
     async def on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Reply in the same chat (and forum topic) with the chat id and
-        message_thread_id, so the user knows what to put in TELEGRAM_CHAT_ID.
+        Welcome the chat and point it at /subscribe. Alerts are opt-in per chat:
+        nothing is sent here until the chat subscribes to at least one project.
         """
-        msg = update.effective_message
         chat_id = update.effective_chat.id
-        # forum topics carry message_thread_id; plain chats / General topic don't
-        thread_id = msg.message_thread_id if msg.is_topic_message else None
-
         lines = [
-            "✅ <b>Got it.</b> Use these for the notifier:",
+            "👋 <b>Sentry alerts bot.</b> Этот чат пока не получает алерты.",
             "",
-            f"<b>chat id:</b> <code>{esc(chat_id)}</code>",
+            "1) <code>/subscribe &lt;проект|all&gt;</code> — подписаться (см. <code>/projects</code>)",
+            "2) <code>/alerts new ongoing escalating|all</code> — какие статусы (по умолч. все)",
+            "3) <code>/set &lt;параметр&gt; &lt;значение&gt;</code> — правила чата (<code>/params</code>)",
+            "",
+            "Подписки этого чата: <code>/subscriptions</code> · все команды: <code>/help</code>",
+            f"<i>chat id:</i> <code>{esc(chat_id)}</code>",
         ]
-        if thread_id is not None:
-            lines.append(f"<b>topic (message_thread_id):</b> <code>{esc(thread_id)}</code>")
-            lines.append("")
-            lines.append("This message came from a forum topic — set both to post here.")
-
-        text_out = "\n".join(lines)
-        # Try to reply inside the topic; if Telegram rejects the thread (closed
-        # topic, etc.) retry without it so the ids still get delivered.
-        sent = await self.send(text_out, chat_id=chat_id, message_thread_id=thread_id)
-        if not sent and thread_id is not None:
-            log.warning("topic send rejected for chat=%s thread=%s; retrying without thread",
-                        chat_id, thread_id)
-            await self.send(text_out, chat_id=chat_id, message_thread_id=None)
-        log.info("/start chat_id=%s thread_id=%s", chat_id, thread_id)
+        await self._reply(update, "\n".join(lines))
+        log.info("/start chat_id=%s", chat_id)
 
     # ---------------------------------------------------- interactive commands
     @staticmethod

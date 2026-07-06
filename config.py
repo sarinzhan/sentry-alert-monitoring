@@ -17,17 +17,9 @@ _load_dotenv()
 
 
 # --- core ---
+# Alerts are fully opt-in per chat: a chat subscribes to projects with /subscribe.
+# There is no default/global chat — the bot only posts where a chat has subscribed.
 BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN")
-# TELEGRAM_CHAT_ID may be a bare chat id ("-100123...") or "chatid:thread" to post
-# into a specific forum topic ("-100123...:8"). Split it into chat + default thread.
-_raw_chat     = (os.environ.get("TELEGRAM_CHAT_ID") or "").strip()
-CHAT_ID       = _raw_chat or None
-CHAT_THREAD_ID = None
-if _raw_chat and ":" in _raw_chat:
-    _cid, _, _tid = _raw_chat.partition(":")
-    CHAT_ID = _cid.strip() or None
-    _tid = _tid.strip()
-    CHAT_THREAD_ID = int(_tid) if _tid.lstrip("-").isdigit() else None
 CLIENT_SECRET = (os.environ.get("SENTRY_CLIENT_SECRET") or "").strip() or None  # empty -> signature check off
 DB_PATH       = os.environ.get("DB_PATH", "state.db")
 HOST          = os.environ.get("HOST", "0.0.0.0")
@@ -192,8 +184,6 @@ def _mask(v):
 
 def banner():
     """Multi-line summary of the effective config at startup (secrets masked)."""
-    chat = (f"{CHAT_ID}" + (f" topic={CHAT_THREAD_ID}" if CHAT_THREAD_ID else "")
-            if CHAT_ID else "- (opt-in: chats self-subscribe with /subscribe)")
     lines = [
         "=" * 64,
         " sentry-telegram — starting",
@@ -201,7 +191,7 @@ def banner():
         f"  listen            {HOST}:{PORT}",
         f"  db                {DB_PATH}",
         f"  telegram bot      {_mask(BOT_TOKEN)}",
-        f"  telegram chat     {chat}",
+        f"  telegram chat     opt-in: chats self-subscribe with /subscribe",
         f"  telegram polling  {TELEGRAM_POLLING}",
         f"  telegram tls      insecure={TELEGRAM_SSL_INSECURE} ca={TELEGRAM_CA_BUNDLE or '-'}",
         f"  sentry signature  {'on (' + _mask(CLIENT_SECRET) + ')' if CLIENT_SECRET else 'OFF — no verification'}",

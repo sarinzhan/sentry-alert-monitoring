@@ -20,7 +20,7 @@ import urllib.parse
 import httpx
 
 from config import (
-    CLIENT_SECRET, DB_PATH, STAT_WINDOWS, CHAT_ID, CHAT_THREAD_ID,
+    CLIENT_SECRET, DB_PATH, STAT_WINDOWS,
     DEFAULT_RULES, ALERT_STATUSES,
     ONGOING_INTERVAL_SEC, CRITICAL_WINDOW_SEC, CRITICAL_RATELIMIT_SEC,
     CRITICAL_ERROR_THRESHOLD, AFFECTED_USER_THRESHOLD,
@@ -183,19 +183,6 @@ class SentryEventHandler:
             " last_sent REAL NOT NULL DEFAULT 0, last_critical REAL NOT NULL DEFAULT 0,"
             " step INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, issue_id))"
         )
-        # tiny key/value table for one-time migration flags
-        self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-        # One-time seed: keep the pre-configured TELEGRAM_CHAT_ID working by subscribing
-        # it to all projects. New chats start with no subscriptions (opt-in).
-        if CHAT_ID and not self._db.execute(
-                "SELECT 1 FROM meta WHERE key='seeded'").fetchone():
-            self._db.execute(
-                "INSERT OR IGNORE INTO chat_subscription(chat_id, project, thread_id, by, at) "
-                "VALUES (?, '*', ?, 'seed', ?)",
-                (str(CHAT_ID), str(CHAT_THREAD_ID) if CHAT_THREAD_ID is not None else None,
-                 time.time()))
-            self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('seeded', '1')")
-            log.info("seeded default subscription: chat=%s -> all projects", CHAT_ID)
         self._db.commit()
         self._lock = asyncio.Lock()
         self._prompt_logged = True   # log the LLM prompt once, so you can inspect it

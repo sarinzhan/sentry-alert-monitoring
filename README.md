@@ -16,9 +16,8 @@ Add the bot to any chat/topic. **By default it sends nothing** — each chat opt
 - `/set <param> <value>` — **this chat's own** trigger rules (`/set reset` to clear,
   `/params` to view). Every chat has its own rules and its own send state.
 
-The optional `TELEGRAM_CHAT_ID` is seeded once as *subscribed to all projects*, so an
-existing single-chat deployment keeps working; new chats start empty. Send `/start` in a
-chat/topic and the bot replies with its `chat id` / `message_thread_id`.
+There is **no default/global chat** — the bot only posts where a chat has subscribed. Add
+the bot to a chat/topic, send `/start` for a quick guide, then `/subscribe`.
 
 ## Layout
 
@@ -112,7 +111,7 @@ Copy `.env.example` and fill in. Highlights (see `.env.example` for the full lis
 
 | Variable | What |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | bot token; `chatid:thread` target |
+| `TELEGRAM_BOT_TOKEN` | bot token (the only required var; chats subscribe at runtime) |
 | `SENTRY_CLIENT_SECRET` | Internal Integration secret (verifies the webhook; empty = off) |
 | `STAT_WINDOWS` | the 3 count windows on line 2 (durations `s/m/h/d`) |
 | `WINDOW_*` / `*_THRESHOLD` | the trigger model (see above) |
