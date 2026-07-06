@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir \
         --trusted-host pypi.python.org \
         -r requirements.txt
 
-# then the app (all modules live in the project root)
-COPY *.py ./
+# then the app: entry point + the app/ package
+COPY main.py ./
+COPY app/ ./app/
 
 # run unprivileged; /app/data holds the SQLite debounce db and must be writable
 # (a named volume mounted here inherits this ownership on first creation)

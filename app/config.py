@@ -1,4 +1,8 @@
-"""Configuration: tiny .env loader, settings, and shared logging."""
+"""Configuration: tiny .env loader, settings, and shared logging.
+
+Pure settings only — no formatting/rendering. The human-facing summaries
+(banner, /params) live in app.summaries.
+"""
 import os
 import logging
 
@@ -74,9 +78,9 @@ if TELEGRAM_CA_BUNDLE == "-":          # placeholder for "not set"
 # you're already behind a trusted MITM proxy and can't obtain a clean CA cert.
 TELEGRAM_SSL_INSECURE = os.environ.get("TELEGRAM_SSL_INSECURE", "false").lower() == "true"
 
-# Long-poll Telegram for incoming commands (/start) instead of needing a public
-# webhook. Handy for local use. Leave off in production if you use setWebhook,
-# since getUpdates and a webhook can't both be active (Telegram returns 409).
+# Long-poll Telegram for incoming commands instead of needing a public webhook.
+# Handy for local use. Leave off in production if you use setWebhook, since
+# getUpdates and a webhook can't both be active (Telegram returns 409).
 TELEGRAM_POLLING = os.environ.get("TELEGRAM_POLLING", "true").lower() == "true"
 
 # Debug: dump the raw Sentry webhook payload to the log (verbose). Handy for
@@ -111,38 +115,7 @@ STAT_WINDOWS = [int(x) * 60 for x in os.environ.get("STAT_WINDOWS", "720,360,10"
 if len(STAT_WINDOWS) != 3:
     STAT_WINDOWS = [720 * 60, 360 * 60, 10 * 60]
 
-
-def _wlabel(sec):
-    """Seconds -> compact h/m label for the message and /params."""
-    for unit, n in (("h", 3600), ("m", 60)):
-        if sec % n == 0:
-            return f"{sec // n}{unit}"
-    return f"{sec}s"
-
-
-def fmt_duration(sec):
-    """Seconds -> compact d/h/m/s label (e.g. 43200 -> '12h')."""
-    sec = int(sec)
-    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
-        if sec and sec % n == 0:
-            return f"{sec // n}{unit}"
-    return f"{sec}s"
-
-
-def parse_duration(s):
-    """'12h' / '10m' / '30s' / '1d' / bare-seconds -> int seconds, or None if unparseable."""
-    s = str(s).strip().lower()
-    if not s:
-        return None
-    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
-    try:
-        if s[-1] in units:
-            return int(float(s[:-1]) * units[s[-1]])
-        return int(float(s))
-    except (ValueError, IndexError):
-        return None
-
-# Future feature: ask an LLM for likely cause + fix. Off by default.
+# --- LLM (Anthropic) ---
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
@@ -167,53 +140,8 @@ if ANTHROPIC_CA_BUNDLE == "-":
     ANTHROPIC_CA_BUNDLE = ""
 
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("sentry-telegram")
-
-
-def _mask(v):
-    """Show only the ends of a secret so the log is safe but still verifiable."""
-    if not v:
-        return "-"
-    s = str(v)
-    return "****" if len(s) <= 8 else f"{s[:4]}…{s[-4:]} (len {len(s)})"
-
-
-def banner():
-    """Multi-line summary of the effective config at startup (secrets masked)."""
-    lines = [
-        "=" * 64,
-        " sentry-telegram — starting",
-        "=" * 64,
-        f"  listen            {HOST}:{PORT}",
-        f"  db                {DB_PATH}",
-        f"  telegram bot      {_mask(BOT_TOKEN)}",
-        f"  telegram chat     opt-in: chats self-subscribe with /subscribe",
-        f"  telegram polling  {TELEGRAM_POLLING}",
-        f"  telegram tls      insecure={TELEGRAM_SSL_INSECURE} ca={TELEGRAM_CA_BUNDLE or '-'}",
-        f"  sentry signature  {'on (' + _mask(CLIENT_SECRET) + ')' if CLIENT_SECRET else 'OFF — no verification'}",
-        f"  sentry api        url={SENTRY_API_URL} org={SENTRY_ORG} token={_mask(SENTRY_API_TOKEN)}",
-        f"  project names     {PROJECT_NAMES or '-'}",
-        f"  triggers          ongoing>={WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR}h · "
-        f"critical: >{CRITICAL_ERROR_THRESHOLD} err OR >={AFFECTED_USER_THRESHOLD} usr "
-        f"in {WINDOW_CRITICAL_INTERVAL_IN_MINUTE}m, max 1/{WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR}h",
-        f"  keyword           kw_min_interval={KEYWORD_MIN_INTERVAL_SEC}s",
-        f"  stat windows      {'/'.join(_wlabel(w) for w in STAT_WINDOWS)}",
-        f"  llm               enabled={ENABLE_LLM} model={ANTHROPIC_MODEL} "
-        f"max_tokens={ANTHROPIC_MAX_TOKENS} key={_mask(ANTHROPIC_API_KEY)}",
-        f"  llm tls           insecure={ANTHROPIC_SSL_INSECURE} ca={ANTHROPIC_CA_BUNDLE or '-'}",
-        f"  llm stack         lib_max={LLM_STACK_LIB_MAX}",
-        f"  gitlab            url={GITLAB_URL or '-'} ref={GITLAB_REF} "
-        f"token={_mask(GITLAB_TOKEN)} ctx_lines={GITLAB_CONTEXT_LINES}",
-        f"  gitlab projects   {GITLAB_PROJECTS or '-'}",
-        f"  debug             log_raw_payload={LOG_RAW_PAYLOAD} log_llm_prompt={LOG_LLM_PROMPT}",
-        "=" * 64,
-    ]
-    return "\n".join(lines)
-
-
 # The global defaults every chat inherits until it overrides a value with /set.
-# Per-chat overrides live in the DB (see SentryEventHandler.effective_rules).
+# Per-chat overrides live in the DB (see repositories.rules.RulesRepo).
 DEFAULT_RULES = {
     "ongoing_sec":             ONGOING_INTERVAL_SEC,
     "critical_window_sec":     CRITICAL_WINDOW_SEC,
@@ -228,28 +156,5 @@ DEFAULT_RULES = {
 ALERT_STATUSES = ("new", "ongoing", "escalating")
 
 
-def rules_summary(r):
-    """Format one chat's effective trigger rules (a dict shaped like DEFAULT_RULES)."""
-    statuses = r.get("statuses")
-    return "\n".join([
-        "ongoing (min gap):        %s" % fmt_duration(r["ongoing_sec"]),
-        "critical window:          %s" % fmt_duration(r["critical_window_sec"]),
-        "critical error threshold: >%d" % r["critical_threshold"],
-        "affected user threshold:  >=%d" % r["affected_user_threshold"],
-        "critical rate limit:      1 / %s" % fmt_duration(r["critical_ratelimit_sec"]),
-        "stat windows (line 2):    %s" % "/".join(fmt_duration(w) for w in r["stat_windows"]),
-        "statuses:                 %s" % ("all" if not statuses else "/".join(
-            s for s in ALERT_STATUSES if s in statuses)),
-    ])
-
-
-def params_summary(rules=None):
-    """Operational parameters (no secrets) for the /params chat command.
-    Pass a chat's effective rules to show its overrides; defaults otherwise."""
-    return "\n".join([
-        rules_summary(rules or DEFAULT_RULES),
-        "keyword min interval:     %ds" % KEYWORD_MIN_INTERVAL_SEC,
-        "llm:                      enabled=%s model=%s max_tokens=%d" % (
-            ENABLE_LLM, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS),
-        "gitlab source:            %s" % ("on" if (GITLAB_URL and GITLAB_TOKEN and GITLAB_PROJECTS) else "off"),
-    ])
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("sentry-telegram")

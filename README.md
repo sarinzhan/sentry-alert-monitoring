@@ -21,14 +21,34 @@ the bot to a chat/topic, send `/start` for a quick guide, then `/subscribe`.
 
 ## Layout
 
-| File | Responsibility |
-|---|---|
-| `config.py` | `.env` loading, settings, startup `banner()` / `params_summary()` |
-| `utils.py` | shared helpers (`esc`) |
-| `chat_bot_handler.py` | Telegram app: sending + commands (`/subscribe /alerts /set /status /watch …`) |
-| `sentry_event_handler.py` | verify, parse, per-chat subscriptions/rules/decision, keywords, format, GitLab, LLM |
-| `controller.py` | FastAPI app: endpoints + lifespan wiring |
-| `main.py` | entry point |
+The code is a layered `app/` package. Dependencies point one way:
+`commands → deps → {repositories, services}` and `pipeline → {repositories, services}`.
+
+```
+main.py                     entry point
+app/
+  config.py                 .env loading + settings (pure data)
+  summaries.py              banner() / params_summary() / duration parsing
+  utils.py                  esc(), short_id()
+  controller.py             FastAPI endpoints + lifespan = composition root (wires everything)
+  db.py                     Database: the single sqlite connection + all schema/migrations
+  repositories/             thin data access, one module per table-concern
+    issues, subscriptions, rules, chat_state, keywords, usermap, context
+  services/                 external I/O clients
+    sentry_api (id→name) · gitlab (source/blame/diff) · llm (Anthropic)
+  sentry/                   webhook domain
+    parser · security · decision (trigger state machine) · message · analysis · pipeline
+  telegram/
+    bot.py                  Application lifecycle, sending, webhook clearing (409 fix)
+    formatting.py           HELP_TEXT + display formatters
+    deps.py                 dependency bundle injected into bot_data
+    commands/               one file per command group (subscribe, alerts, set, status, ai, watch, map, …)
+```
+
+Each Telegram command lives in its own module under `app/telegram/commands/` and reads
+its data/service dependencies from the injected `Deps` bundle. The composition root in
+`app/controller.py` builds `Database → repositories → services → pipeline → bot` and
+injects them, so no layer reaches back up.
 
 ## Alert triggers
 

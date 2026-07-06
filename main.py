@@ -8,8 +8,8 @@ Run on a server:
 """
 import uvicorn
 
-from config import BOT_TOKEN, HOST, PORT
-from controller import app
+from app.config import BOT_TOKEN, HOST, PORT
+from app.controller import app
 
 
 if __name__ == "__main__":
