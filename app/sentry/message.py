@@ -1,7 +1,7 @@
 """build_message — render one parsed event into the Telegram HTML alert."""
 from app.config import STAT_WINDOWS
 from app.summaries import fmt_duration
-from app.services.llm import money
+from app.services.claude_agent import money
 from app.utils import esc
 
 # status -> emoji for the message header

@@ -15,3 +15,5 @@ class Deps:
     usermap: object         # UserMapRepo
     analysis: object        # AnalysisService
     pipeline: object        # EventPipeline (for the /webhook path)
+    agent: object           # AgentService (/ask, /ai)
+    context: object         # ContextRepo (reply -> issue resolution)

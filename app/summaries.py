@@ -57,9 +57,13 @@ def banner():
         f"  keyword           kw_min_interval={c.KEYWORD_MIN_INTERVAL_SEC}s",
         f"  stat windows      {'/'.join(fmt_duration(w) for w in c.STAT_WINDOWS)}",
         f"  llm               enabled={c.ENABLE_LLM} model={c.ANTHROPIC_MODEL} "
-        f"max_tokens={c.ANTHROPIC_MAX_TOKENS} key={_mask(c.ANTHROPIC_API_KEY)}",
+        f"auth={'api-key ' + _mask(c.ANTHROPIC_API_KEY) if c.ANTHROPIC_API_KEY else ('oauth ' + _mask(c.CLAUDE_CODE_OAUTH_TOKEN) if c.CLAUDE_CODE_OAUTH_TOKEN else '-')}",
         f"  llm tls           insecure={c.ANTHROPIC_SSL_INSECURE} ca={c.ANTHROPIC_CA_BUNDLE or '-'}",
         f"  llm stack         lib_max={c.LLM_STACK_LIB_MAX}",
+        f"  agent             enabled={bool(c.ENABLE_LLM and c.LLM_AUTH_OK)} "
+        f"turns={c.AGENT_MAX_TURNS} budget=${c.AGENT_MAX_BUDGET_USD} "
+        f"analysis_turns={c.ANALYSIS_MAX_TURNS} concurrency={c.AGENT_MAX_CONCURRENCY}",
+        f"  ask endpoint      {'on (key ' + _mask(c.ASK_API_KEY) + ')' if c.ASK_API_KEY else 'OFF — set ASK_API_KEY'}",
         f"  gitlab            url={c.GITLAB_URL or '-'} ref={c.GITLAB_REF} "
         f"token={_mask(c.GITLAB_TOKEN)} ctx_lines={c.GITLAB_CONTEXT_LINES}",
         f"  gitlab projects   {c.GITLAB_PROJECTS or '-'}",
