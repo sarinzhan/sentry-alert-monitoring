@@ -112,4 +112,14 @@ class Database:
             " last_sent REAL NOT NULL DEFAULT 0, last_critical REAL NOT NULL DEFAULT 0,"
             " step INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, issue_id))"
         )
+        try:
+            db.execute("ALTER TABLE chat_rules ADD COLUMN project_window_sec INTEGER")
+        except sqlite3.OperationalError:
+            pass
+        # per (chat, project) last send — drives the "one message per project" window
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS chat_project_state ("
+            " chat_id TEXT NOT NULL, project TEXT NOT NULL,"
+            " last_sent REAL NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, project))"
+        )
         db.commit()

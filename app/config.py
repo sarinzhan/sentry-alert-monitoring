@@ -104,6 +104,13 @@ ONGOING_INTERVAL_SEC   = int(WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR * 3600)
 CRITICAL_WINDOW_SEC    = int(WINDOW_CRITICAL_INTERVAL_IN_MINUTE * 60)
 CRITICAL_RATELIMIT_SEC = int(WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR * 3600)
 
+# Per-project window: at most one message per (chat, project) within this window,
+# regardless of how many distinct issues fire. escalating + keyword force-send
+# bypass it. 0 = off. Suppressed alerts are deferred, not lost: the next event
+# after the window sends as usual.
+WINDOW_PROJECT_IN_MINUTE = float(os.environ.get("WINDOW_PROJECT_IN_MINUTE", "10"))
+PROJECT_WINDOW_SEC       = int(WINDOW_PROJECT_IN_MINUTE * 60)
+
 # Keyword force-send: matching alerts are sent bypassing the min gap. 0 = every event
 # ("во всех случаях"); set >0 seconds as an anti-spam floor between forced sends per issue.
 KEYWORD_MIN_INTERVAL_SEC = int(os.environ.get("KEYWORD_MIN_INTERVAL_SEC", "0"))
@@ -148,6 +155,7 @@ DEFAULT_RULES = {
     "critical_threshold":      CRITICAL_ERROR_THRESHOLD,
     "affected_user_threshold": AFFECTED_USER_THRESHOLD,
     "critical_ratelimit_sec":  CRITICAL_RATELIMIT_SEC,
+    "project_window_sec":      PROJECT_WINDOW_SEC,
     "stat_windows":            list(STAT_WINDOWS),
     "statuses":                None,     # None = all (new/ongoing/escalating)
 }

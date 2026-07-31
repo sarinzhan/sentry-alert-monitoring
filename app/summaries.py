@@ -54,6 +54,8 @@ def banner():
         f"  triggers          ongoing>={c.WINDOW_INTERVAL_FROM_LAST_ALERT_IN_HOUR}h · "
         f"critical: >{c.CRITICAL_ERROR_THRESHOLD} err OR >={c.AFFECTED_USER_THRESHOLD} usr "
         f"in {c.WINDOW_CRITICAL_INTERVAL_IN_MINUTE}m, max 1/{c.WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR}h",
+        f"  project window    "
+        + (f"1 msg / project / {fmt_duration(c.PROJECT_WINDOW_SEC)}" if c.PROJECT_WINDOW_SEC else "off"),
         f"  keyword           kw_min_interval={c.KEYWORD_MIN_INTERVAL_SEC}s",
         f"  stat windows      {'/'.join(fmt_duration(w) for w in c.STAT_WINDOWS)}",
         f"  llm               enabled={c.ENABLE_LLM} model={c.ANTHROPIC_MODEL} "
@@ -78,6 +80,8 @@ def rules_summary(r):
         "critical error threshold: >%d" % r["critical_threshold"],
         "affected user threshold:  >=%d" % r["affected_user_threshold"],
         "critical rate limit:      1 / %s" % fmt_duration(r["critical_ratelimit_sec"]),
+        "project window:           %s" % ("1 msg / project / %s" % fmt_duration(r["project_window_sec"])
+                                          if r.get("project_window_sec") else "off"),
         "stat windows (line 2):    %s" % "/".join(fmt_duration(w) for w in r["stat_windows"]),
         "statuses:                 %s" % ("all" if not statuses else "/".join(
             s for s in c.ALERT_STATUSES if s in statuses)),

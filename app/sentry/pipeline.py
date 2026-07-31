@@ -82,13 +82,16 @@ class EventPipeline:
             # save context so /ai can re-run the LLM on demand for this issue
             self.context.store_ctx(p)
 
+            # stable key for the per-project window (id preferred over slug/name)
+            project_key = p.get("project_id") or raw_project or p.get("project")
             is_prod = (p.get("environment") or "").lower() == "prod"
             analysis, analysis_done = None, False        # LLM analysis computed at most once
             sent = 0
             for chat_id, thread_id in targets:
                 rules = self.rules.effective(chat_id)
                 async with self._lock:
-                    send, status = self.decider.decide(chat_id, p["issue_id"], rules, now, forced)
+                    send, status = self.decider.decide(
+                        chat_id, p["issue_id"], rules, now, forced, project=project_key)
                 if not send:
                     continue
                 # LLM cause/fix only for escalating alerts in prod (computed once, reused)

@@ -10,6 +10,7 @@ RULE_KEYS = {
     "critical_threshold": ("critical_threshold", "int"),
     "affected_users":     ("affected_user_threshold", "int"),
     "critical_ratelimit": ("critical_ratelimit_sec", "duration"),
+    "project_window":     ("project_window_sec", "duration0"),   # 0 = off
     "stat_windows":       ("stat_windows", "windows"),
 }
 
@@ -35,6 +36,11 @@ async def on_set(update, ctx):
         if val is None or val <= 0:
             return await reply(update, "Нужна длительность, напр. <code>12h</code>, "
                                "<code>10m</code>, <code>30s</code>.")
+    elif kind == "duration0":
+        val = parse_duration(raw)
+        if val is None or val < 0:
+            return await reply(update, "Нужна длительность, напр. <code>10m</code>, "
+                               "или <code>0</code> (выключить).")
     elif kind == "int":
         try:
             val = int(raw)

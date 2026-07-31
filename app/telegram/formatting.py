@@ -10,7 +10,7 @@ HELP_TEXT = (
     "<code>/alerts &lt;new ongoing escalating|all&gt;</code> — какие статусы получать (по умолч. все)\n"
     "<code>/set &lt;параметр&gt; &lt;значение&gt;</code> · <code>/set reset</code> — правила этого чата "
     "(<code>/params</code> — текущие). Параметры: ongoing, critical_window, "
-    "critical_threshold, affected_users, critical_ratelimit, stat_windows\n"
+    "critical_threshold, affected_users, critical_ratelimit, project_window, stat_windows\n"
     "<b>Ошибки</b>\n"
     "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт)\n"
     "<code>/ai &lt;id&gt;</code> — спросить AI: причина и фикс\n"
