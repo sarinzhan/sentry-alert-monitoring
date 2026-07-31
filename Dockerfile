@@ -22,12 +22,9 @@ COPY main.py ./
 COPY app/ ./app/
 
 # run unprivileged; /app/data holds the SQLite debounce db and must be writable
-# (a named volume mounted here inherits this ownership on first creation).
-# HOME must be writable too: the Claude Agent SDK's bundled `claude` binary
-# keeps its state under $HOME/.claude.
-ENV HOME=/app/data/home
+# (a named volume mounted here inherits this ownership on first creation)
 RUN useradd --system --no-create-home appuser \
-    && mkdir -p /app/data/home \
+    && mkdir -p /app/data \
     && chown -R appuser:appuser /app
 USER appuser
 

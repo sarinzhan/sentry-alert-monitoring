@@ -34,12 +34,10 @@ app/
   db.py                     Database: the single sqlite connection + all schema/migrations
   repositories/             thin data access, one module per table-concern
     issues, subscriptions, rules, chat_state, keywords, usermap, context
-  services/                 external I/O clients + the agent runtime
-    sentry_api (id→name) · sentry_query (issue search) · gitlab (repo access)
-    claude_agent (Agent SDK runner) · agent_tools (Sentry/GitLab tool servers)
+  services/                 external I/O clients
+    sentry_api (id→name) · gitlab (source/blame/diff) · llm (Anthropic)
   sentry/                   webhook domain
     parser · security · decision (trigger state machine) · message · analysis · pipeline
-    agent.py                AgentService: ask() / investigate() / analyze_run()
   telegram/
     bot.py                  Application lifecycle, sending, webhook clearing (409 fix)
     formatting.py           HELP_TEXT + display formatters
@@ -105,8 +103,7 @@ under Telegram's default privacy mode (no BotFather change).
 | `/alerts <new ongoing escalating\|all>` | which statuses this chat receives (default all) |
 | `/set <param> <value>` · `/set reset` | this chat's rules: `ongoing`, `critical_window`, `critical_threshold`, `affected_users`, `critical_ratelimit`, `stat_windows` |
 | `/status <id>` | issue state: counts, last alert |
-| `/ai` (reply to an alert) · `/ai <id>` | deep AI root-cause: agent pulls the latest event, reads the code in GitLab, checks blame/diff → `Root cause / Fix` |
-| `/ask <question>` | free-form question to the agent: errors, users, code ("какие ошибки у пользователя 12345 за 24h?") |
+| `/ai <id>` | ask the LLM for cause/fix on demand (reuses cache; works for any alerted issue) |
 | `/watch add\|del <text> [project]` · `/watched` | keyword force-send (global or per-project) |
 | `/map <vcs_author> @<tg>` · `/map del\|list` | map a commit author to a Telegram handle |
 
@@ -116,38 +113,14 @@ min gap and status filter (set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam fl
 `/map` entry matches the crash-line author (git blame), line 2 shows the mapped `@telegram`
 (pinged) instead of the VCS name.
 
-## AI agent (Claude Agent SDK) + GitLab (optional)
+## LLM cause/fix + GitLab (optional)
 
-All LLM features run on the **Claude Agent SDK**: an agent with read-only **Sentry tools**
-(search issues/events, per-user errors, latest stacktrace) and **GitLab tools** (find file by
-class/filename, read file, search code — across all repos at once when the repo is unknown —
-list tree, blame, commit diff, recent commits; restricted to the repos in `GITLAB_PROJECTS`).
-
-Auth — either of:
-- `ANTHROPIC_API_KEY` — a regular Anthropic API key, or
-- `CLAUDE_CODE_OAUTH_TOKEN` — a Claude **subscription** (Pro/Max) OAuth token from
-  `claude setup-token` (valid ~1 year; API key wins if both are set).
-
-Three entry points:
-- **Escalating prod alerts** get a `🤖 Likely cause / Suggested fix` automatically. The prompt
-  is prefetched with the source around the crash line, git blame and the last diff, so the run
-  stays short (`ANALYSIS_MAX_TURNS`/`ANALYSIS_MAX_BUDGET_USD`). Answers are cached per
-  issue+commit in SQLite (shown as `💰 cached`) and re-computed only when the code changes.
-- **`/ai`** (reply to an alert, or `/ai <id>`) — deep investigation of one issue: the agent
-  verifies against the latest Sentry event and reads the real code before answering.
-- **`/ask <question>`** and **`POST /ask`** — free-form questions. The HTTP endpoint is for
-  web UIs/other services, protected by `ASK_API_KEY` (disabled when empty):
-
-  ```bash
-  curl -X POST http://sentry-telegram:8080/ask \
-       -H "x-api-key: $ASK_API_KEY" -H "content-type: application/json" \
-       -d '{"question": "почему фронт получает 500 на /api/orders?"}'
-  # -> {"answer": "...", "cost_usd": 0.0123, "in_tokens": ..., "out_tokens": ...}
-  ```
-
-Behind the corporate MITM proxy the SDK subprocess gets `HTTPS_PROXY` plus
-`ANTHROPIC_CA_BUNDLE` (as `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE`), or
-`ANTHROPIC_SSL_INSECURE=true` as a last resort.
+When `ENABLE_LLM=true`, escalating prod alerts get a `🤖 cause / fix` from Anthropic. The
+prompt is enriched via the Sentry issue's `project_id` → GitLab repo mapping:
+current **source** around the crash line, the **author** (git blame), and the **diff** of the
+commit that last touched that line. Answers are cached per issue+commit in SQLite (shown as
+`💰 cached`) and re-computed only when the code changes. The Anthropic call reuses the same
+MITM-tolerant TLS as Telegram (`ANTHROPIC_SSL_INSECURE` / `ANTHROPIC_CA_BUNDLE`).
 
 ## Configure (`.env`)
 
@@ -161,9 +134,7 @@ Copy `.env.example` and fill in. Highlights (see `.env.example` for the full lis
 | `WINDOW_*` / `*_THRESHOLD` | the trigger model defaults (each chat can override) |
 | `SENTRY_PROJECTS` | project id → display name for the header |
 | `GITLAB_URL` / `GITLAB_TOKEN` / `GITLAB_PROJECTS` | GitLab source/blame lookup |
-| `ENABLE_LLM` / `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | AI agent on/off + auth (key or subscription token) |
-| `AGENT_*` / `ANALYSIS_*` | agent limits: turns, budget (USD), concurrency |
-| `ASK_API_KEY` | key for `POST /ask` (empty = endpoint off) |
+| `ENABLE_LLM` / `ANTHROPIC_*` | LLM cause/fix |
 | `TELEGRAM_CA_BUNDLE` / `TELEGRAM_SSL_INSECURE` | Telegram TLS behind a proxy |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | corporate proxy (runtime) |
 
@@ -182,7 +153,7 @@ Sentry stack's docker network, reachable as `http://sentry-telegram:8080`.
 ```bash
 pip install -r requirements.txt
 cp .env.example .env      # then edit it
-python main.py            # 0.0.0.0:8080 : POST /webhook, POST /telegram, POST /ask, GET /health
+python main.py            # 0.0.0.0:8080 : POST /webhook, POST /telegram, GET /health
 ```
 
 ## TLS behind a corporate proxy

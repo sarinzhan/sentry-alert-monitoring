@@ -8,8 +8,7 @@ import json
 import time
 
 _CTX_KEYS = ("issue_id", "project_id", "project", "title", "culprit", "environment",
-             "type", "value", "exc_chain", "frames_full", "frames_struct", "url", "short",
-             "event_id", "trace_id", "tags", "msisdn", "usr", "timestamp")
+             "type", "value", "exc_chain", "frames_full", "frames_struct", "url", "short")
 
 
 class ContextRepo:

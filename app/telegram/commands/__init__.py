@@ -7,7 +7,7 @@ from telegram.ext import CommandHandler
 
 from app.telegram.commands import (
     start, help as help_cmd, params, subscribe, alerts, rules_set,
-    status, ai, ask, projects, watch, usermap,
+    status, ai, projects, watch, usermap,
 )
 
 # (command names, handler). A list of names registers aliases to one handler.
@@ -22,7 +22,6 @@ _COMMANDS = [
     (["set"], rules_set.on_set),
     (["status"], status.on_status),
     (["ai"], ai.on_ai),
-    (["ask"], ask.on_ask),
     (["projects"], projects.on_projects),
     (["watch"], watch.on_watch),
     (["watched"], watch.on_watched),

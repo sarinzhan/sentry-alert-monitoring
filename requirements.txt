@@ -2,4 +2,3 @@ fastapi
 uvicorn[standard]
 httpx
 python-telegram-bot>=21,<22
-claude-agent-sdk

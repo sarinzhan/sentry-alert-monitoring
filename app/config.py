@@ -115,13 +115,9 @@ STAT_WINDOWS = [int(x) * 60 for x in os.environ.get("STAT_WINDOWS", "720,360,10"
 if len(STAT_WINDOWS) != 3:
     STAT_WINDOWS = [720 * 60, 360 * 60, 10 * 60]
 
-# --- LLM (Claude Agent SDK) ---
+# --- LLM (Anthropic) ---
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
-# Alternative auth: Claude subscription OAuth token (Pro/Max) from `claude setup-token`,
-# valid ~1 year. If both are set the API key wins (matches the SDK's precedence).
-CLAUDE_CODE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip() or None
-LLM_AUTH_OK        = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
 ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 # Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
 # actually generated). Too low truncates the cause/fix mid-sentence.
@@ -142,25 +138,6 @@ ANTHROPIC_SSL_INSECURE = os.environ.get(
 ANTHROPIC_CA_BUNDLE = os.environ.get("ANTHROPIC_CA_BUNDLE", "").strip()
 if ANTHROPIC_CA_BUNDLE == "-":
     ANTHROPIC_CA_BUNDLE = ""
-
-# --- agent bounds ---
-# /ask and /ai run an agentic loop (Sentry + GitLab tools); these cap a single run.
-AGENT_MAX_TURNS         = int(os.environ.get("AGENT_MAX_TURNS", "12"))
-AGENT_MAX_BUDGET_USD    = float(os.environ.get("AGENT_MAX_BUDGET_USD", "1.0"))
-# /ai follows the full investigation path (event -> trace -> prior actions ->
-# code -> blame), which is several tool calls longer than a plain /ask run.
-INVESTIGATE_MAX_TURNS      = int(os.environ.get("INVESTIGATE_MAX_TURNS", "18"))
-INVESTIGATE_MAX_BUDGET_USD = float(os.environ.get("INVESTIGATE_MAX_BUDGET_USD", "1.5"))
-# The webhook-path analysis (escalating prod alerts) is tighter: context is
-# prefetched into the prompt, so it usually answers in 1-2 turns.
-ANALYSIS_MAX_TURNS      = int(os.environ.get("ANALYSIS_MAX_TURNS", "5"))
-ANALYSIS_MAX_BUDGET_USD = float(os.environ.get("ANALYSIS_MAX_BUDGET_USD", "0.30"))
-# Each agent run spawns a `claude` subprocess — cap how many run at once.
-AGENT_MAX_CONCURRENCY   = int(os.environ.get("AGENT_MAX_CONCURRENCY", "2"))
-
-# --- HTTP POST /ask protection ---
-# Empty = endpoint disabled (always 401). Clients send it as the x-api-key header.
-ASK_API_KEY = os.environ.get("ASK_API_KEY", "").strip() or None
 
 
 # The global defaults every chat inherits until it overrides a value with /set.

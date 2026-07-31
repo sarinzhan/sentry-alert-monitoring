@@ -94,30 +94,20 @@ def parse(resource: str, payload: dict):
     if isinstance(project, dict):
         project = project.get("slug") or project.get("name")
 
-    # flat tag dict — tags arrive as [key, value] pairs or {key, value} dicts
-    tags = {}
-    for t in (obj.get("tags") or []):
-        if isinstance(t, (list, tuple)) and len(t) == 2 and t[0]:
-            k, v = t
-        elif isinstance(t, dict) and t.get("key"):
-            k, v = t["key"], t.get("value")
-        else:
-            continue
-        tags[str(k)] = str(v)[:200] if v is not None else None
-
     # affected-user identifier for the "critical by users" rule
     u = obj.get("user") or {}
-    usr = _first(u.get("id"), u.get("email"), u.get("username"), u.get("ip_address"),
-                 tags.get("user"))
+    usr = _first(u.get("id"), u.get("email"), u.get("username"), u.get("ip_address"))
+    if not usr:
+        for t in (obj.get("tags") or []):
+            if isinstance(t, (list, tuple)) and len(t) == 2 and t[0] == "user":
+                usr = t[1]; break
+            if isinstance(t, dict) and t.get("key") == "user":
+                usr = t.get("value"); break
     usr = str(usr)[:200] if usr else None
 
     return {
         "issue_id": issue_id,
         "usr": usr,
-        "tags": tags,
-        "msisdn": tags.get("msisdn"),
-        "trace_id": (((obj.get("contexts") or {}).get("trace")) or {}).get("trace_id"),
-        "timestamp": _first(obj.get("datetime"), obj.get("timestamp")),
         "event_id": _first(obj.get("event_id"), obj.get("eventID")),
         "action": action,
         "title": obj.get("title") or exc_type or "Sentry event",

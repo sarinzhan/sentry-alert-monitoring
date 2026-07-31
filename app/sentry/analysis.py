@@ -1,27 +1,27 @@
 """AnalysisService — the LLM cause/fix use-case.
 
 Orchestrates: cache (ContextRepo) → GitLab source+diff enrichment → prompt →
-bounded agent run (AgentService.analyze_run) → cache write. Used by the
-pipeline (escalating prod alerts); /ai now runs the deeper AgentService.investigate.
+LlmClient → cache write. Used by the pipeline (escalating prod alerts) and by
+the /ai command (analyze_ref, on demand).
 """
 from app.config import log
-from app.services.claude_agent import money
+from app.services.llm import money
 from app.utils import esc
 
 
 class AnalysisService:
-    def __init__(self, issues, context, gitlab, agent):
+    def __init__(self, issues, context, gitlab, llm):
         self._issues = issues      # IssuesRepo (resolve_ref)
         self._context = context    # ContextRepo (ctx + analysis cache)
         self._gitlab = gitlab      # GitLabClient
-        self._agent = agent        # AgentService (analyze_run)
+        self._llm = llm            # LlmClient
 
     async def analyze(self, p: dict):
         """Cause + fix for a parsed event. Returns text, or None if unavailable.
         Cached per issue+commit so repeats reuse the answer until the code changes."""
         issue_id = p.get("issue_id")
         blame_sha = (p.get("blame") or {}).get("sha_full") or "-"
-        if self._agent.enabled and issue_id:
+        if self._llm.enabled and issue_id:
             row = self._context.get_analysis(issue_id, blame_sha)
             if row:
                 log.info("llm cache hit issue=%s commit=%s", issue_id, blame_sha[:8])
@@ -39,9 +39,12 @@ class AnalysisService:
         chain = "\n".join(f"{t}: {v}" for t, v in (p.get("exc_chain") or [])) \
             or f"{p.get('type')}: {p.get('value')}"
         stack = "\n".join(p.get("frames_full") or p.get("frames") or [])
-        # the triage instructions live in ANALYSIS_SYSTEM_PROMPT (agent.py);
-        # this is just the evidence
         prompt = (
+            "You are a senior backend engineer triaging a Sentry error. Use the recent "
+            "change diff to judge whether it introduced the bug. "
+            "Reply in at most 4 short lines, plain text:\n"
+            "Likely cause: <one sentence>\n"
+            "Suggested fix: <one or two sentences>\n\n"
             f"Culprit: {p.get('culprit')}\n"
             f"Environment: {p.get('environment')}\n"
             f"Exception chain (most recent last):\n{chain}\n\n"
@@ -59,25 +62,22 @@ class AnalysisService:
         # dump the prompt so you can inspect it (even while ENABLE_LLM is off)
         log.info("LLM prompt preview:\n%s", prompt)
 
-        if not self._agent.enabled:
+        if not self._llm.enabled:
             return None
 
-        ans = await self._agent.analyze_run(prompt)
-        if ans is None:
+        res = await self._llm.complete(prompt)
+        if res is None:
             return None
-        result = ("🤖 " + esc(ans.text)) if ans.text else None
-        p["llm_meta"] = {"cached": False, "cost": ans.cost,
-                         "in": ans.in_tokens, "out": ans.out_tokens}
-        log.info("llm call issue=%s in=%d out=%d cost=$%.4f%s", issue_id,
-                 ans.in_tokens, ans.out_tokens, ans.cost,
-                 " (est)" if ans.cost_estimated else "")
+        text, in_tok, out_tok, cost = res
+        result = ("🤖 " + esc(text)) if text else None
+        p["llm_meta"] = {"cached": False, "cost": cost, "in": in_tok, "out": out_tok}
+        log.info("llm call issue=%s in=%d out=%d cost=$%.4f", issue_id, in_tok, out_tok, cost)
         if result and issue_id:
-            self._context.put_analysis(issue_id, blame_sha, result, ans.cost)
+            self._context.put_analysis(issue_id, blame_sha, result, cost)
         return result
 
     async def analyze_ref(self, ref):
-        """Run (or reuse cached) analysis for an issue by id, on demand.
-        Kept for the cached quick-look path (cheaper than a full /ai investigation).
+        """Run (or reuse cached) analysis for an issue by id, on demand (/ai).
         Returns the analysis text, a status string, or None if the id is unknown."""
         info = self._issues.resolve_ref(ref)
         if not info:
@@ -85,8 +85,8 @@ class AnalysisService:
         p = self._context.get_ctx(info["issue_id"])
         if p is None:
             return "Нет контекста для анализа — ошибка не приходила после запуска бота."
-        if not self._agent.enabled:
-            return "LLM выключен (ENABLE_LLM=false или нет ключа/токена)."
+        if not self._llm.enabled:
+            return "LLM выключен (ENABLE_LLM=false)."
         p["_loc"] = await self._gitlab.locate_source(p)
         if p.get("_loc"):
             p["blame"] = await self._gitlab.fetch_blame(p["_loc"])
