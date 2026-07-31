@@ -105,9 +105,9 @@ CRITICAL_WINDOW_SEC    = int(WINDOW_CRITICAL_INTERVAL_IN_MINUTE * 60)
 CRITICAL_RATELIMIT_SEC = int(WINDOW_INTERVAL_FOR_CRITICAL_IN_HOUR * 3600)
 
 # Per-project window: at most one message per (chat, project) within this window,
-# regardless of how many distinct issues fire. escalating + keyword force-send
-# bypass it. 0 = off. Suppressed alerts are deferred, not lost: the next event
-# after the window sends as usual.
+# regardless of how many distinct issues fire or their status (escalating too).
+# Only keyword force-send bypasses it. 0 = off. Suppressed alerts are deferred,
+# not lost: the next event after the window sends as usual.
 WINDOW_PROJECT_IN_MINUTE = float(os.environ.get("WINDOW_PROJECT_IN_MINUTE", "10"))
 PROJECT_WINDOW_SEC       = int(WINDOW_PROJECT_IN_MINUTE * 60)
 

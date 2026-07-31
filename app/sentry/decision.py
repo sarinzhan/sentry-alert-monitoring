@@ -19,9 +19,10 @@ class Decider:
         status: new | ongoing (>= chat's min gap) | escalating (chat's critical spike).
         forced: keyword force-send (bypasses the min gap + status filter).
         project: key for the per-project window — at most one message per (chat,
-        project) within rules["project_window_sec"]. escalating + forced bypass it.
-        A suppression leaves the issue state untouched, so the alert is deferred
-        (retries on the next event once the window frees), not lost.
+        project) within rules["project_window_sec"], whatever the status; only
+        forced (keyword) sends bypass it. A suppression leaves the issue state
+        untouched, so the alert is deferred (retries on the next event once the
+        window frees), not lost.
         """
         chat_id = str(chat_id)
         statuses = rules.get("statuses")            # None = all
@@ -30,8 +31,8 @@ class Decider:
         def allowed(s):
             return forced or statuses is None or s in statuses
 
-        def project_open(status):
-            if forced or status == "escalating" or not project_window or project is None:
+        def project_open():
+            if forced or not project_window or project is None:
                 return True
             return (now - self._state.project_last_sent(chat_id, project)) >= project_window
 
@@ -46,7 +47,7 @@ class Decider:
 
         if first_time:
             if allowed("new"):
-                if not project_open("new"):
+                if not project_open():
                     return False, None
                 remember(now, 0, 1)
                 return True, "new"
@@ -69,7 +70,7 @@ class Decider:
         else:
             return False, None
 
-        if not project_open(status):
+        if not project_open():
             return False, None
         remember(now, now if status == "escalating" else (last_critical or 0), step + 1)
         return True, status
