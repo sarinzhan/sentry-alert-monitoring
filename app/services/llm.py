@@ -1,17 +1,23 @@
-"""LlmClient — a thin Anthropic Messages API wrapper (call + token cost).
+"""LlmClient — one-shot Claude call through the Claude Agent SDK (call + token cost).
+
+First iteration of the SDK migration: same complete() contract as the old
+Messages-API client, but the call runs through the SDK's bundled `claude`
+binary, so auth can be an Anthropic API key OR a Claude subscription OAuth
+token (`claude setup-token`). No tools yet — the MCP tool set comes next.
 
 Pure client: no DB, no GitLab, no prompt building. The analysis use-case that
 caches results and enriches the prompt with source/blame lives in
 app.sentry.analysis.AnalysisService.
 """
-import ssl
+import os
+import asyncio
 
-import httpx
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 
 from app.config import (
-    ENABLE_LLM, ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS,
-    ANTHROPIC_PRICE_IN, ANTHROPIC_PRICE_OUT, USD_KGS_RATE,
-    ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE, log,
+    ENABLE_LLM, ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, LLM_AUTH_OK,
+    ANTHROPIC_MODEL, ANTHROPIC_MAX_TOKENS, USD_KGS_RATE,
+    ANTHROPIC_SSL_INSECURE, ANTHROPIC_CA_BUNDLE, AGENT_MAX_CONCURRENCY, log,
 )
 
 
@@ -20,55 +26,72 @@ def money(usd):
     return f"${usd:.4f} · {usd * USD_KGS_RATE:.2f} сом"
 
 
+def _sdk_env():
+    """Env for the SDK's `claude` subprocess: auth, proxy, and CA trust.
+
+    Passed explicitly rather than relying on inheritance, so what the subprocess
+    sees is exactly what we decided here.
+    """
+    env = {}
+    if ANTHROPIC_API_KEY:
+        env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
+    elif CLAUDE_CODE_OAUTH_TOKEN:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = CLAUDE_CODE_OAUTH_TOKEN
+    env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(ANTHROPIC_MAX_TOKENS)
+    # api.anthropic.com is only reachable through the corporate proxy
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+              "http_proxy", "https_proxy", "no_proxy"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    # the proxy MITMs TLS: trust the corporate CA, or (last resort) skip verify
+    if ANTHROPIC_CA_BUNDLE:
+        env["NODE_EXTRA_CA_CERTS"] = ANTHROPIC_CA_BUNDLE
+        env["SSL_CERT_FILE"] = ANTHROPIC_CA_BUNDLE
+    elif ANTHROPIC_SSL_INSECURE:
+        env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    return env
+
+
 class LlmClient:
     def __init__(self):
-        self._client = None
-        if ENABLE_LLM and ANTHROPIC_API_KEY:
-            # external call — keeps trust_env (proxy) but needs MITM-tolerant TLS
-            ctx = ssl.create_default_context()
-            if ANTHROPIC_CA_BUNDLE:
-                ctx.load_verify_locations(ANTHROPIC_CA_BUNDLE)
-            ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
-            if ANTHROPIC_SSL_INSECURE:
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-            self._client = httpx.AsyncClient(timeout=30, verify=ctx)
+        self._enabled = ENABLE_LLM and LLM_AUTH_OK
+        # each call is one `claude` subprocess — serialize bursts instead of
+        # forking dozens of CLIs at once
+        self._sem = asyncio.Semaphore(max(1, AGENT_MAX_CONCURRENCY))
 
     @property
     def enabled(self):
-        return self._client is not None
+        return self._enabled
 
     async def complete(self, prompt: str):
-        """Send one prompt. Returns (text, in_tokens, out_tokens, cost_usd), or None."""
+        """Send one prompt. Returns (text, in_tokens, out_tokens, cost_usd), or None.
+        cost_usd is None with subscription OAuth (the SDK reports no dollar cost) —
+        callers then show only the token counts."""
+        if not self._enabled:
+            return None
+        options = ClaudeAgentOptions(
+            model=ANTHROPIC_MODEL,
+            max_turns=1,                          # plain completion — no tool loop yet
+            tools=[],                             # no built-ins: no fs/bash/web access
+            allowed_tools=[],
+            permission_mode="bypassPermissions",  # headless; nothing to permit anyway
+            setting_sources=[],                   # don't load CLAUDE.md/skills from disk
+            env=_sdk_env(),
+        )
         try:
-            r = await self._client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": ANTHROPIC_MODEL,
-                    "max_tokens": ANTHROPIC_MAX_TOKENS,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=30,
-            )
-            r.raise_for_status()
-            data = r.json()
-            usage = data.get("usage") or {}
-            in_tok = usage.get("input_tokens", 0)
-            out_tok = usage.get("output_tokens", 0)
-            cost = in_tok / 1e6 * ANTHROPIC_PRICE_IN + out_tok / 1e6 * ANTHROPIC_PRICE_OUT
-            text = "".join(
-                b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
-            ).strip()
-            return text, in_tok, out_tok, cost
+            async with self._sem:
+                text, in_tok, out_tok, cost = "", 0, 0, None
+                async for message in query(prompt=prompt, options=options):
+                    if isinstance(message, ResultMessage):
+                        text = (message.result or "").strip()
+                        usage = message.usage or {}
+                        in_tok = usage.get("input_tokens", 0) or 0
+                        out_tok = usage.get("output_tokens", 0) or 0
+                        cost = message.total_cost_usd
         except Exception as e:
             log.warning("LLM call failed: %s", e)
             return None
+        return text, in_tok, out_tok, cost
 
     async def aclose(self):
-        if self._client is not None:
-            await self._client.aclose()
+        pass                                      # no persistent client to close

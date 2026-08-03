@@ -122,17 +122,22 @@ STAT_WINDOWS = [int(x) * 60 for x in os.environ.get("STAT_WINDOWS", "720,360,10"
 if len(STAT_WINDOWS) != 3:
     STAT_WINDOWS = [720 * 60, 360 * 60, 10 * 60]
 
-# --- LLM (Anthropic) ---
+# --- LLM (Claude Agent SDK) ---
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
+# Alternative auth: Claude subscription OAuth token (Pro/Max) from `claude setup-token`,
+# valid ~1 year. If both are set the API key wins (matches the SDK's precedence).
+CLAUDE_CODE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip() or None
+LLM_AUTH_OK        = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
 ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+# Each LLM call spawns the SDK's `claude` subprocess — cap how many run at once.
+AGENT_MAX_CONCURRENCY = int(os.environ.get("AGENT_MAX_CONCURRENCY", "2"))
 # Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
 # actually generated). Too low truncates the cause/fix mid-sentence.
 ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
-# Price per 1M tokens, for the cost line in the message. Defaults = Opus 4.8 ($5/$25).
-ANTHROPIC_PRICE_IN  = float(os.environ.get("ANTHROPIC_PRICE_IN", "5.0"))
-ANTHROPIC_PRICE_OUT = float(os.environ.get("ANTHROPIC_PRICE_OUT", "25.0"))
 # USD -> Kyrgyz som (KGS) rate, to also show the cost in сом. Update as needed.
+# (With subscription OAuth the SDK reports no dollar cost — the message shows
+# only the token counts, so the rate matters for api-key auth only.)
 USD_KGS_RATE = float(os.environ.get("USD_KGS_RATE", "89.5"))
 # Stack sent to the LLM: keep the full in-app (project) trace, but at most this many
 # library frames (framework noise). All-lib crashes still show the top few for context.

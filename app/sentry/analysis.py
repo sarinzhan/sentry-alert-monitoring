@@ -71,7 +71,8 @@ class AnalysisService:
         text, in_tok, out_tok, cost = res
         result = ("🤖 " + esc(text)) if text else None
         p["llm_meta"] = {"cached": False, "cost": cost, "in": in_tok, "out": out_tok}
-        log.info("llm call issue=%s in=%d out=%d cost=$%.4f", issue_id, in_tok, out_tok, cost)
+        log.info("llm call issue=%s in=%d out=%d cost=%s", issue_id, in_tok, out_tok,
+                 f"${cost:.4f}" if cost is not None else "- (subscription)")
         if result and issue_id:
             self._context.put_analysis(issue_id, blame_sha, result, cost)
         return result
@@ -97,5 +98,6 @@ class AnalysisService:
         if m.get("cached"):
             cost = f"💰 cached (~{money(m['cost'])})" if m.get("cost") else "💰 cached"
         else:
-            cost = f"💰 {money(m.get('cost', 0))} · {m.get('in', 0)} in / {m.get('out', 0)} out"
+            toks = f"{m.get('in', 0)} in / {m.get('out', 0)} out"
+            cost = f"💰 {money(m['cost'])} · {toks}" if m.get("cost") else f"💰 {toks}"
         return f"{analysis}\n<i>{cost}</i>"

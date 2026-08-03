@@ -65,16 +65,18 @@ def build_message(p: dict, analysis: str = None) -> str:
         s = esc(p["short"])
         lines.append(f"<code>/status {s}</code>  <code>/ai {s}</code>")
 
-    # bottom: LLM API cost (USD + som), or "cached" (with what it saved) on a hit
+    # bottom: LLM cost (USD + som with an api key; tokens only on subscription),
+    # or "cached" (with what it saved) on a hit
     m = p.get("llm_meta")
     if m:
         if m.get("cached"):
             saved = f" (saved ~{money(m['cost'])})" if m.get("cost") else ""
             lines.append(f"<i>💰 LLM: cached{esc(saved)}</i>")
         else:
-            lines.append(
-                f"<i>💰 LLM: {money(m.get('cost', 0))} · "
-                f"{esc(m.get('in', 0))} in / {esc(m.get('out', 0))} out</i>"
-            )
+            toks = f"{esc(m.get('in', 0))} in / {esc(m.get('out', 0))} out"
+            if m.get("cost"):
+                lines.append(f"<i>💰 LLM: {money(m['cost'])} · {toks}</i>")
+            else:
+                lines.append(f"<i>💰 LLM: {toks}</i>")
 
     return "\n".join(lines)
