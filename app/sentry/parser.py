@@ -88,6 +88,10 @@ def parse(resource: str, payload: dict):
     if exc_value:
         exc_value = str(exc_value)[:1000]
 
+    # distributed-tracing id — same across every service that handled the request,
+    # so the LLM can look up the upstream error in another project's events
+    trace_id = ((obj.get("contexts") or {}).get("trace") or {}).get("trace_id")
+
     project = obj.get("project")
     # keep the raw numeric project id for GitLab repo mapping (before name resolution)
     project_id = project.get("id") if isinstance(project, dict) else project
@@ -125,4 +129,5 @@ def parse(resource: str, payload: dict):
         "exc_chain": exc_chain,
         "project": project,
         "project_id": project_id,
+        "trace_id": trace_id,
     }

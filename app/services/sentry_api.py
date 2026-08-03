@@ -27,6 +27,10 @@ class SentryApiClient:
                 headers={"Authorization": f"Bearer {SENTRY_API_TOKEN}"},
             )
 
+    @property
+    def enabled(self):
+        return self._api is not None
+
     async def resolve_project(self, project):
         """Map a project id to a name. Order: static map -> API -> raw id fallback."""
         if project is None:
@@ -64,6 +68,39 @@ class SentryApiClient:
                             e.response.status_code, e.response.text[:200])
             except Exception as e:
                 log.warning("project name fetch failed: %s", e)
+
+    async def project_id_for_slug(self, slug):
+        """Reverse lookup: project slug/name -> numeric id (for the repo map)."""
+        if not slug:
+            return None
+        s = str(slug)
+        for pid, name in PROJECT_NAMES.items():
+            if name == s:
+                return pid
+        if self._api is not None:
+            if s not in self._cache.values():
+                await self._refresh()
+            for pid, name in self._cache.items():
+                if name == s:
+                    return pid
+        return None
+
+    async def events_for_trace(self, trace_id: str, limit: int = 20):
+        """Error events across ALL projects sharing one trace id (Discover
+        query — self-hosted Sentry ships Discover). Raises on HTTP errors;
+        the LLM tool layer turns that into a message."""
+        r = await self._api.get(
+            f"/api/0/organizations/{SENTRY_ORG}/events/",
+            params=[
+                ("field", "title"), ("field", "project"), ("field", "message"),
+                ("field", "issue"), ("field", "timestamp"),
+                ("query", f"trace:{trace_id}"),
+                ("statsPeriod", "24h"), ("sort", "-timestamp"),
+                ("per_page", str(limit)),
+            ],
+        )
+        r.raise_for_status()
+        return ((r.json() or {}).get("data")) or []
 
     async def aclose(self):
         if self._api is not None:

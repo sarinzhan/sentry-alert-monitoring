@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     llm = LlmClient()
 
     # --- domain ---
-    analysis = AnalysisService(issues, context, gitlab, llm)
+    analysis = AnalysisService(issues, context, gitlab, llm, sentry_api)
     decider = Decider(chat_state, issues)
 
     # --- telegram + pipeline (bot.send is the pipeline's sender) ---

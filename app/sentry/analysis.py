@@ -2,23 +2,30 @@
 
 Orchestrates: cache (ContextRepo) → GitLab source+diff enrichment → prompt →
 LlmClient → cache write. Used by the pipeline (escalating prod alerts) and by
-the /ai command (analyze_ref, on demand).
+the /ai command (analyze_ref, on demand). /ai runs agentically: the model gets
+read-only GitLab tools over the mapped service repos (crashing service first)
+plus a Sentry related_errors(trace_id) tool to chase cross-service causes;
+the pipeline keeps the cheaper one-shot prompt.
 """
-from app.config import log
+from app.config import ENABLE_LLM_TOOLS, GITLAB_REF, log
+from app.services.gitlab_tools import build_gitlab_server
+from app.services.sentry_tools import build_sentry_server
 from app.services.llm import money
 from app.utils import esc
 
 
 class AnalysisService:
-    def __init__(self, issues, context, gitlab, llm):
+    def __init__(self, issues, context, gitlab, llm, sentry):
         self._issues = issues      # IssuesRepo (resolve_ref)
         self._context = context    # ContextRepo (ctx + analysis cache)
         self._gitlab = gitlab      # GitLabClient
         self._llm = llm            # LlmClient
+        self._sentry = sentry      # SentryApiClient (related_errors tool)
 
-    async def analyze(self, p: dict):
+    async def analyze(self, p: dict, use_tools: bool = False):
         """Cause + fix for a parsed event. Returns text, or None if unavailable.
-        Cached per issue+commit so repeats reuse the answer until the code changes."""
+        Cached per issue+commit so repeats reuse the answer until the code changes.
+        use_tools=True attaches the GitLab tool set (agentic loop, /ai path)."""
         issue_id = p.get("issue_id")
         blame_sha = (p.get("blame") or {}).get("sha_full") or "-"
         if self._llm.enabled and issue_id:
@@ -47,7 +54,8 @@ class AnalysisService:
             "Suggested fix: <one or two sentences>\n\n"
             f"Culprit: {p.get('culprit')}\n"
             f"Environment: {p.get('environment')}\n"
-            f"Exception chain (most recent last):\n{chain}\n\n"
+            + (f"Trace id: {p['trace_id']}\n" if p.get("trace_id") else "")
+            + f"Exception chain (most recent last):\n{chain}\n\n"
             f"Stack (crash site first):\n{stack}"
         )
         if source:
@@ -59,13 +67,44 @@ class AnalysisService:
                 f"\"{blame.get('subject')}\") — previous vs current (diff):\n{change}"
             )
 
+        # agentic path (/ai): read-only GitLab tools over the mapped repos
+        # (crashing service is the default), plus cross-service error lookup
+        # by trace id, so the model can chase a cause into an upstream service
+        servers = allowed = None
+        if use_tools and ENABLE_LLM_TOOLS:
+            repo = self._gitlab.repo_for(p)
+            if repo:
+                servers, allowed = build_gitlab_server(self._gitlab, repo)
+                prompt += (
+                    f"\n\nYou have read-only GitLab tools (read_file, find_file, "
+                    f"search_code, blame, commit_diff, recent_commits) over the "
+                    f"mapped service repos, ref {GITLAB_REF}; each takes a 'repo' "
+                    f"argument defaulting to the crashing service's repo ({repo})."
+                )
+                s2, a2 = build_sentry_server(self._sentry)
+                if s2:
+                    servers.update(s2)
+                    allowed = allowed + a2
+                    prompt += (
+                        " There is also related_errors(trace_id): error events "
+                        "across ALL services on one trace — if the failure looks "
+                        "caused by an upstream service (HTTP 5xx, timeout from a "
+                        "downstream call), use it with the trace id above, then "
+                        "read that service's repo."
+                    )
+                prompt += (
+                    " Use the tools if the context above is not enough to be "
+                    "confident. Keep the final answer in the format above, and "
+                    "if the cause is in another service, name that service."
+                )
+
         # dump the prompt so you can inspect it (even while ENABLE_LLM is off)
         log.info("LLM prompt preview:\n%s", prompt)
 
         if not self._llm.enabled:
             return None
 
-        res = await self._llm.complete(prompt)
+        res = await self._llm.complete(prompt, mcp_servers=servers, allowed_tools=allowed)
         if res is None:
             return None
         text, in_tok, out_tok, cost = res
@@ -90,7 +129,7 @@ class AnalysisService:
         p["_loc"] = await self._gitlab.locate_source(p)
         if p.get("_loc"):
             p["blame"] = await self._gitlab.fetch_blame(p["_loc"])
-        analysis = await self.analyze(p)
+        analysis = await self.analyze(p, use_tools=True)
         if not analysis:
             return "Пустой ответ от LLM."
         m = p.get("llm_meta") or {}

@@ -198,6 +198,66 @@ class GitLabClient:
             log.info("gitlab: located via search (loose) -> %s", best)
         return best
 
+    # ------------------------------------------------------- LLM tool backends
+    # Thin raw accessors for the MCP tool set (app.services.gitlab_tools).
+    # Unlike the fetch_* methods above they raise on HTTP errors — the tool
+    # layer turns the exception into a message the model can react to.
+    def repo_for(self, p: dict):
+        """Mapped GitLab repo path for a parsed event, or None if unmapped."""
+        if self._client is None:
+            return None
+        return GITLAB_PROJECTS.get(str(p.get("project_id")))
+
+    async def read_raw(self, proj_enc: str, path: str):
+        """Full raw file content at GITLAB_REF."""
+        enc = urllib.parse.quote(path, safe="")
+        r = await self._client.get(
+            f"/api/v4/projects/{proj_enc}/repository/files/{enc}/raw",
+            params={"ref": GITLAB_REF},
+        )
+        r.raise_for_status()
+        return r.text
+
+    async def search_blobs(self, proj_enc: str, query: str, per_page: int = 20):
+        """Repo blob search: list of {path, startline, data} hits."""
+        r = await self._client.get(
+            f"/api/v4/projects/{proj_enc}/search",
+            params={"scope": "blobs", "search": query, "ref": GITLAB_REF,
+                    "per_page": per_page},
+        )
+        r.raise_for_status()
+        return r.json() or []
+
+    async def blame_range(self, proj_enc: str, path: str, start: int, end: int):
+        """Blame entries [{commit, lines}] for a line range."""
+        enc = urllib.parse.quote(path, safe="")
+        r = await self._client.get(
+            f"/api/v4/projects/{proj_enc}/repository/files/{enc}/blame",
+            params={"ref": GITLAB_REF, "range[start]": start, "range[end]": end},
+        )
+        r.raise_for_status()
+        return r.json() or []
+
+    async def commit_diffs(self, proj_enc: str, sha: str):
+        """All file diffs of one commit (fetch_change returns just one file's)."""
+        sha_enc = urllib.parse.quote(str(sha), safe="")
+        r = await self._client.get(
+            f"/api/v4/projects/{proj_enc}/repository/commits/{sha_enc}/diff"
+        )
+        r.raise_for_status()
+        return r.json() or []
+
+    async def recent_commits(self, proj_enc: str, path: str = None, limit: int = 10):
+        """Latest commits on GITLAB_REF, optionally only those touching a path."""
+        params = {"ref_name": GITLAB_REF, "per_page": limit}
+        if path:
+            params["path"] = path
+        r = await self._client.get(
+            f"/api/v4/projects/{proj_enc}/repository/commits", params=params
+        )
+        r.raise_for_status()
+        return r.json() or []
+
     async def _read_file(self, proj_enc: str, path: str, lineno: int):
         lo, hi = max(1, lineno - GITLAB_CONTEXT_LINES), lineno + GITLAB_CONTEXT_LINES
         enc = urllib.parse.quote(path, safe="")

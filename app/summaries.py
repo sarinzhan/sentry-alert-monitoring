@@ -62,6 +62,7 @@ def banner():
         f"max_tokens={c.ANTHROPIC_MAX_TOKENS} auth="
         + ("api-key " + _mask(c.ANTHROPIC_API_KEY) if c.ANTHROPIC_API_KEY
            else ("oauth " + _mask(c.CLAUDE_CODE_OAUTH_TOKEN) if c.CLAUDE_CODE_OAUTH_TOKEN else "-")),
+        f"  llm tools         enabled={c.ENABLE_LLM_TOOLS} max_turns={c.AGENT_MAX_TURNS}",
         f"  llm tls           insecure={c.ANTHROPIC_SSL_INSECURE} ca={c.ANTHROPIC_CA_BUNDLE or '-'}",
         f"  llm stack         lib_max={c.LLM_STACK_LIB_MAX}",
         f"  gitlab            url={c.GITLAB_URL or '-'} ref={c.GITLAB_REF} "

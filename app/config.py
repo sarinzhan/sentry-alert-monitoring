@@ -132,6 +132,13 @@ LLM_AUTH_OK        = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
 ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 # Each LLM call spawns the SDK's `claude` subprocess — cap how many run at once.
 AGENT_MAX_CONCURRENCY = int(os.environ.get("AGENT_MAX_CONCURRENCY", "2"))
+# Agentic analysis (/ai): give the LLM read-only GitLab tools so it can dig
+# through the repo itself (read files, grep, blame, recent commits). Applies to
+# the on-demand /ai command only — pipeline alerts keep the cheaper one-shot.
+ENABLE_LLM_TOOLS = os.environ.get("ENABLE_LLM_TOOLS", "true").lower() == "true"
+# Turn ceiling for the tool loop (each turn = one model call; tool results come
+# back between turns). Only used when tools are attached; one-shot stays at 1.
+AGENT_MAX_TURNS = int(os.environ.get("AGENT_MAX_TURNS", "15"))
 # Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
 # actually generated). Too low truncates the cause/fix mid-sentence.
 ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
