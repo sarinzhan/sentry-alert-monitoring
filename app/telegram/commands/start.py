@@ -1,5 +1,4 @@
 """/start — beginner-friendly onboarding: what the bot does, alert types, parameters."""
-from app.config import log
 from app.utils import esc
 from app.summaries import fmt_duration
 from app.telegram.commands._helpers import reply, chat_of, deps_of
@@ -55,4 +54,3 @@ async def on_start(update, ctx):
         f"<i>chat id этого чата: <code>{esc(chat_id)}</code></i>",
     ]
     await reply(update, "\n".join(lines))
-    log.info("/start chat_id=%s", chat_id)

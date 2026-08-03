@@ -77,8 +77,9 @@ class LlmClient:
 
     async def complete(self, prompt: str):
         """Send one prompt. Returns (text, in_tokens, out_tokens, cost_usd), or None.
-        cost_usd is None with subscription OAuth (the SDK reports no dollar cost) —
-        callers then show only the token counts."""
+        cost_usd is None with subscription auth: the flat-rate plan has no real
+        per-call cost (the CLI still reports a hypothetical figure — dropped),
+        so callers show only the token counts."""
         if not self._enabled:
             return None
         options = ClaudeAgentOptions(
@@ -103,6 +104,8 @@ class LlmClient:
         except Exception as e:
             log.warning("LLM call failed: %s", e)
             return None
+        if auth_mode() == "subscription":
+            cost = None
         log.info("llm done auth=%s in=%d out=%d cost=%s", auth_mode(), in_tok, out_tok,
                  f"${cost:.4f}" if cost is not None else "-")
         return text, in_tok, out_tok, cost

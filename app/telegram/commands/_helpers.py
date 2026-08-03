@@ -5,10 +5,17 @@ from telegram.error import TelegramError
 from app.config import log
 
 
+def _preview(html: str, limit=300):
+    """One-line, truncated view of an outgoing reply for the log."""
+    s = " ".join(str(html).split())
+    return s[:limit] + ("…" if len(s) > limit else "")
+
+
 async def reply(update: Update, html: str):
     """Reply in the same chat/forum-topic as the incoming command."""
     try:
         await update.effective_message.reply_html(html, disable_web_page_preview=True)
+        log.info("reply chat=%s: %s", update.effective_chat.id, _preview(html))
     except TelegramError as e:
         log.error("command reply failed: %s", e)
 
