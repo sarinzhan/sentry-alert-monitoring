@@ -103,6 +103,8 @@ class LlmClient:
         except Exception as e:
             log.warning("LLM call failed: %s", e)
             return None
+        log.info("llm done auth=%s in=%d out=%d cost=%s", auth_mode(), in_tok, out_tok,
+                 f"${cost:.4f}" if cost is not None else "-")
         return text, in_tok, out_tok, cost
 
     async def aclose(self):

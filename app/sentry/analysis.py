@@ -5,7 +5,7 @@ LlmClient → cache write. Used by the pipeline (escalating prod alerts) and by
 the /ai command (analyze_ref, on demand).
 """
 from app.config import log
-from app.services.llm import money, auth_mode
+from app.services.llm import money
 from app.utils import esc
 
 
@@ -71,8 +71,7 @@ class AnalysisService:
         text, in_tok, out_tok, cost = res
         result = ("🤖 " + esc(text)) if text else None
         p["llm_meta"] = {"cached": False, "cost": cost, "in": in_tok, "out": out_tok}
-        log.info("llm call issue=%s auth=%s in=%d out=%d cost=%s", issue_id, auth_mode(),
-                 in_tok, out_tok, f"${cost:.4f}" if cost is not None else "-")
+        log.info("llm analysis issue=%s", issue_id)   # auth/tokens logged by LlmClient
         if result and issue_id:
             self._context.put_analysis(issue_id, blame_sha, result, cost)
         return result
