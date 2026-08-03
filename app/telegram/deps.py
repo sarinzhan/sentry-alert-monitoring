@@ -15,3 +15,4 @@ class Deps:
     usermap: object         # UserMapRepo
     analysis: object        # AnalysisService
     pipeline: object        # EventPipeline (for the /webhook path)
+    llm: object             # LlmClient (/ask)

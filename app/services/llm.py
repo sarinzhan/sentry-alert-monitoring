@@ -26,6 +26,16 @@ def money(usd):
     return f"${usd:.4f} · {usd * USD_KGS_RATE:.2f} сом"
 
 
+def auth_mode():
+    """'api-key' | 'subscription' | None — which credential the SDK subprocess
+    uses. API key wins when both are set (matches the SDK's own precedence)."""
+    if ANTHROPIC_API_KEY:
+        return "api-key"
+    if CLAUDE_CODE_OAUTH_TOKEN:
+        return "subscription"
+    return None
+
+
 def _sdk_env():
     """Env for the SDK's `claude` subprocess: auth, proxy, and CA trust.
 
@@ -58,6 +68,8 @@ class LlmClient:
         # each call is one `claude` subprocess — serialize bursts instead of
         # forking dozens of CLIs at once
         self._sem = asyncio.Semaphore(max(1, AGENT_MAX_CONCURRENCY))
+        if self._enabled:
+            log.info("llm ready: auth=%s model=%s", auth_mode(), ANTHROPIC_MODEL)
 
     @property
     def enabled(self):

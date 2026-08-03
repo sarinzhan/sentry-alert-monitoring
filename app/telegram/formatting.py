@@ -14,6 +14,7 @@ HELP_TEXT = (
     "<b>Ошибки</b>\n"
     "<code>/status &lt;id&gt;</code> — статус ошибки (счётчики, последний алерт)\n"
     "<code>/ai &lt;id&gt;</code> — спросить AI: причина и фикс\n"
+    "<code>/ask &lt;вопрос&gt;</code> — свободный вопрос AI\n"
     "<code>/watch add|del &lt;текст&gt; [проект]</code> · <code>/watched</code> — force-send по тексту\n"
     "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code> · <code>/map del|list</code> — автор коммита → Telegram\n"
     "<b>id</b> — короткий код <code>#abcdef</code> из строки 2 алерта."

@@ -65,7 +65,8 @@ async def lifespan(app: FastAPI):
         gitlab=gitlab, analysis=analysis, sender=bot.send)
 
     deps = Deps(issues=issues, subscriptions=subscriptions, rules=rules,
-                keywords=keywords, usermap=usermap, analysis=analysis, pipeline=pipeline)
+                keywords=keywords, usermap=usermap, analysis=analysis,
+                pipeline=pipeline, llm=llm)
     register_all(bot.app, deps)
 
     app.state.bot = bot
