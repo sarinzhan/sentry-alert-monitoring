@@ -51,10 +51,19 @@ TZ_OFFSET_HOURS = float(os.environ.get("TIMEZONE_OFFSET_HOURS", "6"))
 # Sentry Logs dataset: services ship application log lines to Sentry, so user
 # ACTIONS (not only errors) are searchable. Empty disables the log lookups.
 SENTRY_LOGS_DATASET = os.environ.get("SENTRY_LOGS_DATASET", "logs").strip()
-# How to find one user's log lines. The msisdn lives INSIDE the message text
-# (the dedicated msisdn field is empty), hence a full-text query template.
-SENTRY_LOGS_MSISDN_QUERY = os.environ.get("SENTRY_LOGS_MSISDN_QUERY",
-                                          'message:"{value}"')
+# How to find one user's log lines. Some services set the msisdn ATTRIBUTE
+# (v4-service), others only mention it inside the message text (configurator),
+# hence attribute OR full-text by default.
+SENTRY_LOGS_MSISDN_QUERY = os.environ.get(
+    "SENTRY_LOGS_MSISDN_QUERY", '(msisdn:"{value}" OR message:"{value}")')
+# Which projects Discover queries cover. Default -1 = ALL projects; without an
+# explicit value Sentry falls back to the token's "member projects" only.
+# Comma-separated numeric ids to narrow (e.g. "2,3,6").
+SENTRY_SEARCH_PROJECTS = [p.strip() for p in os.environ.get(
+    "SENTRY_SEARCH_PROJECTS", "-1").split(",") if p.strip()]
+# Environments to search; empty = all (prod, stage, dev, ...).
+SENTRY_ENVIRONMENTS = [e.strip() for e in os.environ.get(
+    "SENTRY_ENVIRONMENTS", "").split(",") if e.strip()]
 
 # Project id -> display NAME for the message header, e.g. "3:s_billing,4:billing".
 # Checked before the Sentry API lookup. Accept SENTRY_PROJECTS (preferred) or the

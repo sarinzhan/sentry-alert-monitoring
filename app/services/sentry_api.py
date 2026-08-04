@@ -13,7 +13,8 @@ import httpx
 from app.config import (
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
     SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS,
-    SENTRY_LOGS_DATASET, SENTRY_LOGS_MSISDN_QUERY, log,
+    SENTRY_LOGS_DATASET, SENTRY_LOGS_MSISDN_QUERY,
+    SENTRY_SEARCH_PROJECTS, SENTRY_ENVIRONMENTS, log,
 )
 
 # columns every Discover query returns; issue.id maps a hit back to our #short
@@ -117,9 +118,14 @@ class SentryApiClient:
         """Events across ALL projects matching a Discover search query
         (self-hosted Sentry ships Discover). Time range: start+end (ISO 8601,
         UTC) or stats_period like '24h'/'7d'. dataset=None queries errors;
-        'logs' queries application log lines. Raises on HTTP errors."""
+        'logs' queries application log lines. Project scope and environments
+        come from SENTRY_SEARCH_PROJECTS / SENTRY_ENVIRONMENTS — without an
+        explicit project param Sentry silently narrows to the token's "member
+        projects", so -1 (all) is sent by default. Raises on HTTP errors."""
         params = [("field", f) for f in fields]
         params += [("query", query), ("sort", "-timestamp"), ("per_page", str(limit))]
+        params += [("project", p) for p in SENTRY_SEARCH_PROJECTS]
+        params += [("environment", e) for e in SENTRY_ENVIRONMENTS]
         if dataset:
             params.append(("dataset", dataset))
         if start and end:
