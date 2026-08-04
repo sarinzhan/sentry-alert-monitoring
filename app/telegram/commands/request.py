@@ -5,6 +5,7 @@
 """
 import re
 
+from app.services.sentry_api import discover_error_hint
 from app.utils import esc
 from app.telegram.commands._helpers import reply, deps_of
 
@@ -40,7 +41,10 @@ async def on_req(update, ctx):
         return await reply(update, USAGE)
 
     await reply(update, "🔎 ищу…")
-    key, events = await deps.sentry.events_for_request(request_id, stats_period=period)
+    try:
+        key, events = await deps.sentry.events_for_request(request_id, stats_period=period)
+    except Exception as e:
+        return await reply(update, f"⚠️ Sentry Discover недоступен: {esc(discover_error_hint(e))}")
     if not events:
         from app.config import SENTRY_REQUEST_ID_FIELDS
         return await reply(update,

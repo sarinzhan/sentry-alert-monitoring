@@ -20,6 +20,16 @@ DISCOVER_FIELDS = ("id", "title", "project", "message", "issue", "issue.id",
                    "timestamp", "environment")
 
 
+def discover_error_hint(e):
+    """Human-readable reason for a failed Discover query (for chat replies)."""
+    s = str(e)
+    if "403" in s:
+        return ("403 Forbidden — токену SENTRY_API_TOKEN не хватает прав на "
+                "Discover. Нужны scopes event:read и org:read (для Internal "
+                "Integration: Permissions → Issue & Event: Read, Organization: Read).")
+    return s[:300]
+
+
 class SentryApiClient:
     def __init__(self):
         self._cache: dict[str, str] = {}
@@ -112,17 +122,24 @@ class SentryApiClient:
 
     async def find_events(self, keys, value, **kw):
         """Try each configured search key (e.g. user.id, then a tag) until one
-        returns hits. Returns (matched_key, events) — (None, []) if nothing."""
+        returns hits. Returns (matched_key, events) — (None, []) if nothing.
+        Raises when EVERY key fails (an API problem, e.g. a 403 on missing
+        token scopes — not the same as "no data", which callers show as
+        'not found')."""
         value = str(value).strip().strip('"')
+        errors = []
         for key in keys:
             try:
                 events = await self.discover(f'{key}:"{value}"', **kw)
             except Exception as e:
                 log.warning("discover %s:%s failed: %s", key, value, e)
+                errors.append(e)
                 continue
             if events:
                 log.info("discover hit key=%s value=%s n=%d", key, value, len(events))
                 return key, events
+        if errors and len(errors) == len(keys):
+            raise errors[-1]
         return None, []
 
     async def events_for_request(self, request_id, stats_period="24h", limit=50):

@@ -7,6 +7,7 @@
 import datetime
 
 from app.config import TZ_OFFSET_HOURS, log
+from app.services.sentry_api import discover_error_hint
 from app.services.sentry_tools import fmt_event_details
 from app.utils import esc
 from app.telegram.commands._helpers import reply, deps_of, llm_cost_line
@@ -59,8 +60,11 @@ async def on_activity(update, ctx):
         return await reply(update, USAGE)
 
     await reply(update, "🔎 собираю хронологию…")
-    key, events = await deps.sentry.events_for_user(
-        msisdn, stats_period=f"{hours}h")
+    try:
+        key, events = await deps.sentry.events_for_user(
+            msisdn, stats_period=f"{hours}h")
+    except Exception as e:
+        return await reply(update, f"⚠️ Sentry Discover недоступен: {esc(discover_error_hint(e))}")
     if not events:
         from app.config import SENTRY_MSISDN_FIELDS
         return await reply(update,

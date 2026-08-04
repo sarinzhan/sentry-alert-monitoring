@@ -12,6 +12,7 @@ from app.config import (
     GITLAB_PROJECTS, GITLAB_REF, ENABLE_LLM_TOOLS, TZ_OFFSET_HOURS, log,
 )
 from app.services.gitlab_tools import build_gitlab_server
+from app.services.sentry_api import discover_error_hint
 from app.services.sentry_tools import build_sentry_server, fmt_event_details
 from app.utils import esc
 from app.telegram.commands._helpers import reply, deps_of, llm_cost_line
@@ -114,7 +115,10 @@ async def on_why(update, ctx):
     center_utc = when_local - datetime.timedelta(hours=TZ_OFFSET_HOURS)
 
     await reply(update, "🔎 ищу ошибки абонента и анализирую…")
-    key, events, start, end = await _search(deps.sentry, msisdn, center_utc)
+    try:
+        key, events, start, end = await _search(deps.sentry, msisdn, center_utc)
+    except Exception as e:
+        return await reply(update, f"⚠️ Sentry Discover недоступен: {esc(discover_error_hint(e))}")
     if not events:
         from app.config import SENTRY_MSISDN_FIELDS
         return await reply(update,

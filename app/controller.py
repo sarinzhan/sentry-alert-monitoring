@@ -12,6 +12,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 
 from app.config import BOT_TOKEN, TELEGRAM_POLLING, log
 from app.summaries import banner
@@ -114,7 +115,10 @@ async def request_events(request_id: str, request: Request, period: str = "24h")
     sentry = request.app.state.sentry
     if not sentry.enabled:
         return Response(status_code=503)
-    key, events = await sentry.events_for_request(request_id, stats_period=period)
+    try:
+        key, events = await sentry.events_for_request(request_id, stats_period=period)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:300]}, status_code=502)
     return {"request_id": request_id, "period": period,
             "matched_field": key, "count": len(events), "events": events}
 
