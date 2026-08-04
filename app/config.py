@@ -48,6 +48,13 @@ SENTRY_REQUEST_ID_FIELDS = [f.strip() for f in os.environ.get(
     "SENTRY_REQUEST_ID_FIELDS", "request_id,trace").split(",") if f.strip()]
 # Times users type in commands (/why) are local; Sentry stores UTC. Default +6 (Bishkek).
 TZ_OFFSET_HOURS = float(os.environ.get("TIMEZONE_OFFSET_HOURS", "6"))
+# Sentry Logs dataset: services ship application log lines to Sentry, so user
+# ACTIONS (not only errors) are searchable. Empty disables the log lookups.
+SENTRY_LOGS_DATASET = os.environ.get("SENTRY_LOGS_DATASET", "logs").strip()
+# How to find one user's log lines. The msisdn lives INSIDE the message text
+# (the dedicated msisdn field is empty), hence a full-text query template.
+SENTRY_LOGS_MSISDN_QUERY = os.environ.get("SENTRY_LOGS_MSISDN_QUERY",
+                                          'message:"{value}"')
 
 # Project id -> display NAME for the message header, e.g. "3:s_billing,4:billing".
 # Checked before the Sentry API lookup. Accept SENTRY_PROJECTS (preferred) or the

@@ -134,9 +134,11 @@ services tag events:
   logic** (system worked as designed) or **code error**, plus evidence.
   msisdn search keys: `SENTRY_MSISDN_FIELDS` (default
   `user.id,user.username,msisdn`); local-time offset: `TIMEZONE_OFFSET_HOURS`.
-- **`/activity <msisdn> [1|3|6]`** — the subscriber's error timeline over the
-  last N hours plus an LLM summary of what they tried (from breadcrumbs) and
-  what failed. Errors only — the services don't send transactions.
+- **`/activity <msisdn> [1|3|6]`** — the subscriber's timeline over the last
+  N hours: application **log lines** (Sentry logs dataset — successful actions
+  included, found full-text via `SENTRY_LOGS_MSISDN_QUERY`) merged with error
+  events, plus an LLM summary of what they did and what failed. `/why` uses the
+  same log lookup, and the agent gets a `search_logs` tool.
 - **`/api <path>`** — API documentation generated from the mapped GitLab repos:
   the agentic LLM finds the endpoint (case-insensitive, typo-tolerant), reads
   the handler and replies with the contract, a curl example and the behavior;

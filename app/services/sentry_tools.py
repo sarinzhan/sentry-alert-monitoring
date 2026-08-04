@@ -9,9 +9,12 @@ model knows which 'repo' value to use with the GitLab tools next.
 """
 from claude_agent_sdk import tool, create_sdk_mcp_server
 
-from app.config import GITLAB_PROJECTS, log
+from app.config import GITLAB_PROJECTS, SENTRY_LOGS_DATASET, log
+from app.services.sentry_api import LOG_FIELDS
 
 MAX_EVENTS = 20
+MAX_LOG_LINES = 40
+MAX_LOG_MSG = 250
 MAX_FRAMES = 12
 MAX_CRUMBS = 20
 MAX_DETAILS = 5000
@@ -19,6 +22,33 @@ MAX_DETAILS = 5000
 
 def _text(s: str):
     return {"content": [{"type": "text", "text": s}]}
+
+
+# fields fmt_log_line already renders — anything else requested shows as key=value
+_LOG_CORE = {"timestamp", "message", "resource.service.name",
+             "exception.type", "exception.message", "exception.stacktrace"}
+
+
+def fmt_log_line(row, msg_limit=250, stack_limit=0, extra_fields=()):
+    """One log row as text: time [service] message, plus exception type/message
+    when present, optionally the (truncated) stacktrace and extra attributes.
+    Shared by the search_logs tool and the /activity, /why prompt builders."""
+    msg = " ".join(str(row.get("message") or "").split())[:msg_limit]
+    line = (f"{(row.get('timestamp') or '').replace('T', ' ')[:19]}  "
+            f"[{row.get('resource.service.name') or '?'}]  {msg}")
+    exc_t, exc_m = row.get("exception.type"), row.get("exception.message")
+    if exc_t or exc_m:
+        em = " ".join(str(exc_m or "").split())[:msg_limit]
+        line += f"\n    exception: {exc_t or '?'}" + (f": {em}" if em else "")
+    if stack_limit:
+        stack = str(row.get("exception.stacktrace") or "").strip()
+        if stack:
+            line += f"\n    stack: {stack[:stack_limit]}"
+    extras = [f"{f}={row.get(f)}" for f in extra_fields
+              if f not in _LOG_CORE and row.get(f) not in (None, "")]
+    if extras:
+        line += "\n    " + "  ".join(extras)
+    return line
 
 
 async def _fmt_hits(sentry_api, events):
@@ -171,8 +201,75 @@ def build_sentry_server(sentry_api):
         log.info("sentry tool event_details project=%s event=%s", slug, event_id)
         return _text(fmt_event_details(ev))
 
-    server = create_sdk_mcp_server(name="sentry", version="1.0.0",
-                                   tools=[related_errors, user_events, event_details])
-    return {"sentry": server}, ["mcp__sentry__related_errors",
-                                "mcp__sentry__user_events",
-                                "mcp__sentry__event_details"]
+    @tool(
+        "search_logs",
+        "Full-text search over application LOG lines from all services (not "
+        "just errors — INFO logs of successful operations too). Identifiers "
+        "like the msisdn usually appear INSIDE the message text, so query "
+        'e.g. message:"996555123456", or add words from the operation. Each '
+        "hit shows the message plus exception.type/message/stacktrace when "
+        "present; pass 'fields' to also fetch other attributes (list them "
+        "with log_fields). Use this to reconstruct what a user or service "
+        "actually did around a failure. Give start+end (ISO 8601 UTC) or a "
+        "period like '1h'/'24h'.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": 'Search query, e.g. message:"996555123456"'},
+                "start": {"type": "string",
+                          "description": "Window start, ISO 8601 UTC (with end)"},
+                "end": {"type": "string",
+                        "description": "Window end, ISO 8601 UTC (with start)"},
+                "period": {"type": "string",
+                           "description": "Alternative to start/end: '1h'/'24h'"},
+                "fields": {"type": "array", "items": {"type": "string"},
+                           "description": "Extra log attributes to fetch "
+                                          "(keys from log_fields)"},
+            },
+            "required": ["query"],
+        },
+    )
+    async def search_logs(args):
+        q = (args.get("query") or "").strip()
+        start, end = args.get("start"), args.get("end")
+        extra = [f for f in (args.get("fields") or []) if isinstance(f, str)]
+        try:
+            rows = await sentry_api.search_logs(
+                q,
+                start=start if (start and end) else None,
+                end=end if (start and end) else None,
+                stats_period=None if (start and end) else (args.get("period") or "24h"),
+                limit=MAX_LOG_LINES,
+                fields=(list(LOG_FIELDS) + extra) if extra else None)
+        except Exception as e:
+            return _text(f"Error searching logs for '{q}': {e}")
+        parts = [fmt_log_line(row, MAX_LOG_MSG, stack_limit=500, extra_fields=extra)
+                 for row in (rows if isinstance(rows, list) else [])]
+        log.info("sentry tool search_logs q=%s hits=%d", q[:80], len(parts))
+        if not parts:
+            return _text(f"No log lines match '{q}' in that window.")
+        return _text("\n".join(parts))
+
+    @tool(
+        "log_fields",
+        "List every log attribute key that exists in this Sentry org (fetched "
+        "from the API). Call this before asking search_logs for extra 'fields' "
+        "so you only request attributes that are really there.",
+        {"type": "object", "properties": {}, "required": []},
+    )
+    async def log_fields(args):
+        try:
+            attrs = await sentry_api.log_attributes()
+        except Exception as e:
+            return _text(f"Error listing log attributes: {e}")
+        if not attrs:
+            return _text("Attribute listing is not supported by this Sentry "
+                         "version. Known-good fields: " + ", ".join(LOG_FIELDS))
+        return _text("\n".join(attrs))
+
+    tools = [related_errors, user_events, event_details]
+    if SENTRY_LOGS_DATASET:
+        tools += [search_logs, log_fields]
+    server = create_sdk_mcp_server(name="sentry", version="1.0.0", tools=tools)
+    return {"sentry": server}, [f"mcp__sentry__{t.name}" for t in tools]

@@ -12,12 +12,18 @@ import httpx
 
 from app.config import (
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
-    SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS, log,
+    SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS,
+    SENTRY_LOGS_DATASET, SENTRY_LOGS_MSISDN_QUERY, log,
 )
 
 # columns every Discover query returns; issue.id maps a hit back to our #short
 DISCOVER_FIELDS = ("id", "title", "project", "message", "issue", "issue.id",
                    "timestamp", "environment")
+# columns of the logs dataset (mirrors the fields confirmed to exist in this org);
+# the full attribute list is discoverable at runtime via log_attributes()
+LOG_FIELDS = ("timestamp", "message", "resource.service.name",
+              "instrumentation.name", "trace", "msisdn", "deviceId",
+              "exception.type", "exception.message", "exception.stacktrace")
 
 
 def discover_error_hint(e):
@@ -34,6 +40,8 @@ class SentryApiClient:
     def __init__(self):
         self._cache: dict[str, str] = {}
         self._fetched = 0.0
+        self._log_attrs: list[str] = []
+        self._attrs_fetched = 0.0
         self._lock = asyncio.Lock()
         # dedicated client: trust_env=False so it ignores HTTP(S)_PROXY and talks
         # to Sentry directly on the docker network.
@@ -105,12 +113,15 @@ class SentryApiClient:
         return None
 
     async def discover(self, query: str, stats_period=None, start=None, end=None,
-                       limit: int = 20, fields=DISCOVER_FIELDS):
-        """Error events across ALL projects matching a Discover search query
+                       limit: int = 20, fields=DISCOVER_FIELDS, dataset=None):
+        """Events across ALL projects matching a Discover search query
         (self-hosted Sentry ships Discover). Time range: start+end (ISO 8601,
-        UTC) or stats_period like '24h'/'7d'. Raises on HTTP errors."""
+        UTC) or stats_period like '24h'/'7d'. dataset=None queries errors;
+        'logs' queries application log lines. Raises on HTTP errors."""
         params = [("field", f) for f in fields]
         params += [("query", query), ("sort", "-timestamp"), ("per_page", str(limit))]
+        if dataset:
+            params.append(("dataset", dataset))
         if start and end:
             params += [("start", start), ("end", end)]
         else:
@@ -119,6 +130,68 @@ class SentryApiClient:
                                 params=params)
         r.raise_for_status()
         return ((r.json() or {}).get("data")) or []
+
+    async def search_logs(self, query: str, stats_period=None, start=None,
+                          end=None, limit: int = 100, fields=None):
+        """Application log lines (Sentry logs dataset) matching a search query.
+        fields extends/replaces the default column set (timestamp, message and
+        the service name are always included). [] when the dataset is disabled."""
+        if not SENTRY_LOGS_DATASET:
+            return []
+        cols = list(fields or LOG_FIELDS)
+        for required in ("resource.service.name", "message", "timestamp"):
+            if required not in cols:
+                cols.insert(0, required)
+        try:
+            return await self.discover(query, stats_period=stats_period,
+                                       start=start, end=end, limit=limit,
+                                       fields=cols, dataset=SENTRY_LOGS_DATASET)
+        except httpx.HTTPStatusError as e:
+            # a 400 usually means one of the optional columns doesn't exist in
+            # this org — retry with the minimal set instead of failing the lookup
+            if e.response.status_code != 400:
+                raise
+            log.warning("logs query 400 with fields=%s — retrying minimal: %s",
+                        cols, e.response.text[:200])
+            minimal = ("timestamp", "message", "resource.service.name", "trace")
+            return await self.discover(query, stats_period=stats_period,
+                                       start=start, end=end, limit=limit,
+                                       fields=minimal, dataset=SENTRY_LOGS_DATASET)
+
+    async def log_attributes(self):
+        """All log attribute keys that exist in this org, straight from the API
+        (trace-items attributes endpoint; string + number types). Cached 10 min;
+        [] when the Sentry version doesn't expose the endpoint."""
+        now = time.time()
+        if self._log_attrs and now - self._attrs_fetched < 600:
+            return self._log_attrs
+        self._attrs_fetched = now
+        attrs = set()
+        for attr_type in ("string", "number"):
+            try:
+                r = await self._api.get(
+                    f"/api/0/organizations/{SENTRY_ORG}/trace-items/attributes/",
+                    params={"itemType": "logs", "attributeType": attr_type,
+                            "statsPeriod": "14d"},
+                )
+                r.raise_for_status()
+                for a in r.json() or []:
+                    if isinstance(a, dict) and (a.get("key") or a.get("name")):
+                        attrs.add(a.get("key") or a.get("name"))
+            except Exception as e:
+                log.info("log attribute listing (%s) unavailable: %s", attr_type, e)
+        self._log_attrs = sorted(attrs)
+        if self._log_attrs:
+            log.info("log attributes discovered: %d keys", len(self._log_attrs))
+        return self._log_attrs
+
+    async def logs_for_user(self, msisdn, stats_period=None, start=None,
+                            end=None, limit: int = 100):
+        """One user's log lines — full-text search, since the msisdn appears
+        inside the message text (SENTRY_LOGS_MSISDN_QUERY template)."""
+        q = SENTRY_LOGS_MSISDN_QUERY.format(value=str(msisdn).strip())
+        return await self.search_logs(q, stats_period=stats_period, start=start,
+                                      end=end, limit=limit)
 
     async def find_events(self, keys, value, **kw):
         """Try each configured search key (e.g. user.id, then a tag) until one

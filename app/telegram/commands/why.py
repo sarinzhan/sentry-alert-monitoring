@@ -1,19 +1,23 @@
 """/why <msisdn> <время> <описание> — почему у абонента возникла ошибка.
 
-Ищет ошибки абонента в Sentry вокруг указанного времени (±45 мин, при пустом
-результате автоматически ±3 ч), отдаёт их агентному LLM с инструментами
-GitLab + Sentry и просит вердикт: бизнес-логика (система сработала как задумано)
-или ошибка в коде.
+Ищет ошибки абонента и строки логов приложений в Sentry вокруг указанного
+времени (±45 мин, при пустом результате автоматически ±3 ч), отдаёт их
+агентному LLM с инструментами GitLab + Sentry и просит вердикт: бизнес-логика
+(система сработала как задумано) или ошибка в коде. Работает и без ошибок —
+отказ по бизнес-правилу часто виден только в логах.
 """
 import re
 import datetime
 
 from app.config import (
-    GITLAB_PROJECTS, GITLAB_REF, ENABLE_LLM_TOOLS, TZ_OFFSET_HOURS, log,
+    GITLAB_PROJECTS, GITLAB_REF, ENABLE_LLM_TOOLS, TZ_OFFSET_HOURS,
+    SENTRY_LOGS_DATASET, log,
 )
 from app.services.gitlab_tools import build_gitlab_server
 from app.services.sentry_api import discover_error_hint
-from app.services.sentry_tools import build_sentry_server, fmt_event_details
+from app.services.sentry_tools import (
+    build_sentry_server, fmt_event_details, fmt_log_line,
+)
 from app.utils import esc
 from app.telegram.commands._helpers import reply, deps_of, llm_cost_line
 
@@ -37,6 +41,9 @@ PROMPT = (
     "{start} .. {end} UTC (matched search key: {key}).\n\n"
     "Sentry error events of this subscriber in that window (newest first):\n"
     "{events}\n\n"
+    "Application LOG lines mentioning this subscriber in that window (newest "
+    "first; successful operations appear here too — a business-logic rejection "
+    "often logs without producing an error event):\n{logs}\n\n"
     "Full details of the most recent event(s):\n{details}\n\n"
     "Figure out WHY the subscriber hit the problem, and decide which it is:\n"
     "- бизнес-логика: the system worked as designed (validation rejected the "
@@ -46,9 +53,10 @@ PROMPT = (
     "blame, commit_diff, recent_commits) over the mapped service repos "
     "({repos}, ref {ref}); Sentry event_details(project, event_id) for full "
     "stacks and breadcrumbs, related_errors(trace_id) to follow a failure "
-    "upstream, user_events(msisdn, …) for a wider window. Read the code path "
-    "that threw before deciding — an exception can be a deliberate business "
-    "rule.\n\n"
+    "upstream, user_events(msisdn, …) for a wider window, and search_logs "
+    "(full-text over application logs — follow a trace id or an operation "
+    "name to see the whole flow). Read the code path that threw before "
+    "deciding — an exception can be a deliberate business rule.\n\n"
     "Reply in Russian, plain text, no markdown:\n"
     "Вердикт: бизнес-логика | ошибка в коде | не хватает данных\n"
     "Причина: 1-3 предложения — что именно произошло и в каком сервисе\n"
@@ -119,13 +127,22 @@ async def on_why(update, ctx):
         key, events, start, end = await _search(deps.sentry, msisdn, center_utc)
     except Exception as e:
         return await reply(update, f"⚠️ Sentry Discover недоступен: {esc(discover_error_hint(e))}")
-    if not events:
+    # log lines of the same window: business-logic rejections often only log,
+    # so /why must work even with zero error events
+    logs = []
+    if SENTRY_LOGS_DATASET:
+        try:
+            logs = await deps.sentry.logs_for_user(msisdn, start=start, end=end,
+                                                   limit=60)
+        except Exception as e:
+            log.warning("logs search failed msisdn=%s: %s", msisdn, e)
+    if not events and not logs:
         from app.config import SENTRY_MSISDN_FIELDS
         return await reply(update,
-            f"Ошибок абонента <code>{esc(msisdn)}</code> в Sentry за "
-            f"{esc(start)}—{esc(end)} UTC не найдено (искал по: "
-            f"{esc(', '.join(SENTRY_MSISDN_FIELDS))}). Уточните время или "
-            "проверьте номер — возможно, проблема не дошла до ошибки в сервисах.")
+            f"По абоненту <code>{esc(msisdn)}</code> за {esc(start)}—{esc(end)} "
+            f"UTC в Sentry ничего нет — ни ошибок (искал по: "
+            f"{esc(', '.join(SENTRY_MSISDN_FIELDS))}), ни строк в логах. "
+            "Уточните время или проверьте номер.")
 
     lines, details, primary_repo = [], [], None
     for ev in events[:20]:
@@ -152,10 +169,12 @@ async def on_why(update, ctx):
         if s2:
             servers.update(s2)
             allowed = list(allowed) + a2
+    log_lines = [fmt_log_line(row, msg_limit=300, stack_limit=400) for row in logs]
     prompt = PROMPT.format(
         msisdn=msisdn, description=description,
         local_time=when_local.strftime("%Y-%m-%d %H:%M"), offset=TZ_OFFSET_HOURS,
-        start=start, end=end, key=key, events="\n".join(lines),
+        start=start, end=end, key=key or "-",
+        events=("\n".join(lines) or "—"), logs=("\n".join(log_lines) or "—"),
         details=("\n---\n".join(details) or "—"),
         repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
         ref=GITLAB_REF)
