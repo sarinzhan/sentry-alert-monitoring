@@ -71,12 +71,13 @@ def build_message(p: dict, analysis: str = None) -> str:
     if m:
         if m.get("cached"):
             saved = f" (saved ~{money(m['cost'])})" if m.get("cost") else ""
-            lines.append(f"<i>💰 LLM: cached{esc(saved)}</i>")
+            line = f"💰 LLM: cached{esc(saved)}"
         else:
             toks = f"{esc(m.get('in', 0))} in / {esc(m.get('out', 0))} out"
-            if m.get("cost"):
-                lines.append(f"<i>💰 LLM: {money(m['cost'])} · {toks}</i>")
-            else:
-                lines.append(f"<i>💰 LLM: {toks}</i>")
+            line = f"💰 LLM: {money(m['cost'])} · {toks}" if m.get("cost") \
+                else f"💰 LLM: {toks}"
+        if m.get("llm_id"):
+            line += f" · 🔍 <code>/llm {esc(m['llm_id'])}</code>"
+        lines.append(f"<i>{line}</i>")
 
     return "\n".join(lines)

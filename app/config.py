@@ -38,6 +38,17 @@ SENTRY_API_TOKEN = os.environ.get("SENTRY_API_TOKEN", "").strip()
 if SENTRY_API_TOKEN == "-":            # placeholder for "not set"
     SENTRY_API_TOKEN = ""
 
+# --- Discover lookups (/req, /why, /activity) ---
+# Comma-separated Sentry search keys, tried in order until one returns hits.
+# Where the user's msisdn lives in events: user.id / user.username / a tag name.
+SENTRY_MSISDN_FIELDS = [f.strip() for f in os.environ.get(
+    "SENTRY_MSISDN_FIELDS", "user.id,user.username,msisdn").split(",") if f.strip()]
+# Where the request id lives: a tag name, or 'trace' for the distributed trace id.
+SENTRY_REQUEST_ID_FIELDS = [f.strip() for f in os.environ.get(
+    "SENTRY_REQUEST_ID_FIELDS", "request_id,trace").split(",") if f.strip()]
+# Times users type in commands (/why) are local; Sentry stores UTC. Default +6 (Bishkek).
+TZ_OFFSET_HOURS = float(os.environ.get("TIMEZONE_OFFSET_HOURS", "6"))
+
 # Project id -> display NAME for the message header, e.g. "3:s_billing,4:billing".
 # Checked before the Sentry API lookup. Accept SENTRY_PROJECTS (preferred) or the
 # older PROJECT_NAMES. This is separate from GITLAB_PROJECTS (id -> repo path) below.

@@ -104,6 +104,11 @@ under Telegram's default privacy mode (no BotFather change).
 | `/set <param> <value>` · `/set reset` | this chat's rules: `ongoing`, `critical_window`, `critical_threshold`, `affected_users`, `critical_ratelimit`, `stat_windows` |
 | `/status <id>` | issue state: counts, last alert |
 | `/ai <id>` | ask the LLM for cause/fix on demand (reuses cache; works for any alerted issue) |
+| `/req <request_id> [period]` | all events of one request across services (Discover lookup) |
+| `/why <msisdn> <time> <descr>` | why a subscriber hit an error: business logic vs code bug (agentic LLM) |
+| `/activity <msisdn> [1\|3\|6]` | the subscriber's error timeline over the last N hours + LLM summary |
+| `/api <path>` | endpoint documentation generated from the GitLab code: curl, contract, behavior |
+| `/llm <id>` | inspect a saved LLM call (prompt, tools used, tokens) by the `llm_…` id under a reply |
 | `/watch add\|del <text> [project]` · `/watched` | keyword force-send (global or per-project) |
 | `/map <vcs_author> @<tg>` · `/map del\|list` | map a commit author to a Telegram handle |
 
@@ -112,6 +117,40 @@ per-issue mute. `<id>` is the `#short` from line 2. Keyword force-send bypasses 
 min gap and status filter (set `KEYWORD_MIN_INTERVAL_SEC` > 0 as an anti-spam floor). When a
 `/map` entry matches the crash-line author (git blame), line 2 shows the mapped `@telegram`
 (pinged) instead of the VCS name.
+
+## Investigation commands (Sentry Discover + agentic LLM)
+
+These need `SENTRY_API_TOKEN` (with `event:read`) so the bot can run Discover
+queries; the search keys are configurable because they depend on how the
+services tag events:
+
+- **`/req <request_id> [period]`** — every event of one request across all
+  services. Tries each key in `SENTRY_REQUEST_ID_FIELDS` (default
+  `request_id,trace`) until one hits. Also `GET /api/request/{id}?period=24h`.
+- **`/why <msisdn> <time> <description>`** — searches the subscriber's errors
+  ±45 min around the given local time (auto-widens to ±3 h), feeds them with
+  full details to the agentic LLM (GitLab tools + Sentry `user_events` /
+  `event_details` / `related_errors`) and answers with a verdict: **business
+  logic** (system worked as designed) or **code error**, plus evidence.
+  msisdn search keys: `SENTRY_MSISDN_FIELDS` (default
+  `user.id,user.username,msisdn`); local-time offset: `TIMEZONE_OFFSET_HOURS`.
+- **`/activity <msisdn> [1|3|6]`** — the subscriber's error timeline over the
+  last N hours plus an LLM summary of what they tried (from breadcrumbs) and
+  what failed. Errors only — the services don't send transactions.
+- **`/api <path>`** — API documentation generated from the mapped GitLab repos:
+  the agentic LLM finds the endpoint (case-insensitive, typo-tolerant), reads
+  the handler and replies with the contract, a curl example and the behavior;
+  when no single endpoint matches it lists the closest candidates instead.
+  Cached per query; `/api refresh <path>` regenerates.
+
+## LLM audit trail
+
+Every LLM call is persisted in full (prompt, tools offered, each tool
+invocation with args and result preview, tokens, cost, duration, response) in
+the `llm_call` table, and every LLM-backed reply carries its id
+(`🔍 /llm llm_a1b2c3`). `/llm <id>` shows a summary in the chat;
+`GET /api/llm/{id}` returns the complete record as JSON. Cached `/ai` answers
+keep the id of the call that produced them.
 
 ## LLM cause/fix + GitLab (optional)
 
@@ -134,6 +173,8 @@ Copy `.env.example` and fill in. Highlights (see `.env.example` for the full lis
 | `WINDOW_*` / `*_THRESHOLD` | the trigger model defaults (each chat can override) |
 | `SENTRY_PROJECTS` | project id → display name for the header |
 | `GITLAB_URL` / `GITLAB_TOKEN` / `GITLAB_PROJECTS` | GitLab source/blame lookup |
+| `SENTRY_MSISDN_FIELDS` / `SENTRY_REQUEST_ID_FIELDS` | Discover search keys for `/why`,`/activity` / `/req` |
+| `TIMEZONE_OFFSET_HOURS` | local-time offset for times typed in `/why` (default +6) |
 | `ENABLE_LLM` / `ANTHROPIC_*` | LLM cause/fix |
 | `TELEGRAM_CA_BUNDLE` / `TELEGRAM_SSL_INSECURE` | Telegram TLS behind a proxy |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | corporate proxy (runtime) |

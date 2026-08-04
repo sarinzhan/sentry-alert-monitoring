@@ -29,15 +29,27 @@ class ContextRepo:
 
     # ------------------------------------------------------------ analysis_cache
     def get_analysis(self, issue_id, blame_sha):
-        """(analysis, cost) for this issue+commit, or None."""
+        """(analysis, cost, llm_id) for this issue+commit, or None."""
         return self.db.execute(
-            "SELECT analysis, cost FROM analysis_cache WHERE issue_id=? AND blame_sha=?",
+            "SELECT analysis, cost, llm_id FROM analysis_cache WHERE issue_id=? AND blame_sha=?",
             (issue_id, blame_sha)).fetchone()
 
-    def put_analysis(self, issue_id, blame_sha, analysis, cost):
+    def put_analysis(self, issue_id, blame_sha, analysis, cost, llm_id=None):
         self.db.execute(
-            "INSERT OR REPLACE INTO analysis_cache(issue_id, blame_sha, analysis, cost, updated) "
-            "VALUES (?, ?, ?, ?, ?)", (issue_id, blame_sha, analysis, cost, time.time()))
+            "INSERT OR REPLACE INTO analysis_cache(issue_id, blame_sha, analysis, cost, llm_id, updated) "
+            "VALUES (?, ?, ?, ?, ?, ?)", (issue_id, blame_sha, analysis, cost, llm_id, time.time()))
+        self.db.commit()
+
+    # ------------------------------------------------------------ api_doc
+    def get_api_doc(self, query_norm):
+        """(doc, llm_id, at) of a generated API doc for this query, or None."""
+        return self.db.execute(
+            "SELECT doc, llm_id, at FROM api_doc WHERE query=?", (query_norm,)).fetchone()
+
+    def put_api_doc(self, query_norm, doc, llm_id):
+        self.db.execute(
+            "INSERT OR REPLACE INTO api_doc(query, doc, llm_id, at) VALUES (?, ?, ?, ?)",
+            (query_norm, doc, llm_id, time.time()))
         self.db.commit()
 
     # ------------------------------------------------------------ sent_message

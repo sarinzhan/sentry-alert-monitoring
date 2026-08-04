@@ -11,9 +11,14 @@ caches results and enriches the prompt with source/blame lives in
 app.sentry.analysis.AnalysisService.
 """
 import os
+import time
 import asyncio
+from dataclasses import dataclass, field
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import (
+    query, ClaudeAgentOptions, ResultMessage, AssistantMessage, UserMessage,
+    ToolUseBlock, ToolResultBlock,
+)
 
 from app.config import (
     ENABLE_LLM, ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, LLM_AUTH_OK,
@@ -26,6 +31,37 @@ from app.config import (
 def money(usd):
     """LLM cost in USD and Kyrgyz som, e.g. '$0.0087 · 0.78 сом'."""
     return f"${usd:.4f} · {usd * USD_KGS_RATE:.2f} сом"
+
+
+# tool results are kept as short previews in the audit trail, not in full
+RESULT_PREVIEW = 700
+
+
+@dataclass
+class LlmCall:
+    """Everything one complete() call saw and produced. Persisted by
+    LlmAuditRepo under a short id so the full exchange can be inspected later."""
+    text: str = ""
+    in_tokens: int = 0
+    out_tokens: int = 0
+    cost: float = None            # USD; None with subscription auth
+    turns: int = 0
+    duration_ms: int = 0
+    model: str = ""
+    auth: str = ""
+    agentic: bool = False
+    prompt: str = ""
+    tools_offered: list = field(default_factory=list)
+    tool_calls: list = field(default_factory=list)   # [{tool, args, result}]
+
+
+def _result_preview(content):
+    """Flatten a ToolResultBlock's content into a short one-line preview."""
+    if isinstance(content, list):
+        content = " ".join(b.get("text", "") for b in content
+                           if isinstance(b, dict) and b.get("type") == "text")
+    s = " ".join(str(content or "").split())
+    return s[:RESULT_PREVIEW] + ("…" if len(s) > RESULT_PREVIEW else "")
 
 
 def auth_mode():
@@ -78,12 +114,14 @@ class LlmClient:
         return self._enabled
 
     async def complete(self, prompt: str, mcp_servers=None, allowed_tools=None):
-        """Send one prompt. Returns (text, in_tokens, out_tokens, cost_usd), or None.
+        """Send one prompt. Returns an LlmCall record, or None on failure.
         With mcp_servers set, runs an agentic loop (up to AGENT_MAX_TURNS turns)
         where the model may call those tools; otherwise a single completion.
-        cost_usd is None with subscription auth: the flat-rate plan has no real
-        per-call cost (the CLI still reports a hypothetical figure — dropped),
-        so callers show only the token counts."""
+        Every tool invocation the model makes is captured into the record
+        (name, args, result preview) for the audit trail. cost is None with
+        subscription auth: the flat-rate plan has no real per-call cost (the
+        CLI still reports a hypothetical figure — dropped), so callers show
+        only the token counts."""
         if not self._enabled:
             return None
         agentic = bool(mcp_servers)
@@ -97,26 +135,45 @@ class LlmClient:
             setting_sources=[],                   # don't load CLAUDE.md/skills from disk
             env=_sdk_env(),
         )
+        rec = LlmCall(model=ANTHROPIC_MODEL, auth=auth_mode() or "",
+                      agentic=agentic, prompt=prompt,
+                      tools_offered=list(allowed_tools or []))
+        started = time.monotonic()
+        calls_by_id = {}                          # tool_use id -> its trace entry
         try:
             async with self._sem:
-                text, in_tok, out_tok, cost, turns = "", 0, 0, None, 0
                 async for message in query(prompt=prompt, options=options):
-                    if isinstance(message, ResultMessage):
-                        text = (message.result or "").strip()
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content or []:
+                            if isinstance(block, ToolUseBlock):
+                                call = {"tool": block.name, "args": block.input}
+                                rec.tool_calls.append(call)
+                                calls_by_id[block.id] = call
+                    elif isinstance(message, UserMessage):
+                        content = message.content
+                        for block in content if isinstance(content, list) else []:
+                            if isinstance(block, ToolResultBlock):
+                                call = calls_by_id.get(block.tool_use_id)
+                                if call is not None:
+                                    call["result"] = _result_preview(block.content)
+                    elif isinstance(message, ResultMessage):
+                        rec.text = (message.result or "").strip()
                         usage = message.usage or {}
-                        in_tok = usage.get("input_tokens", 0) or 0
-                        out_tok = usage.get("output_tokens", 0) or 0
-                        cost = message.total_cost_usd
-                        turns = getattr(message, "num_turns", 0) or 0
+                        rec.in_tokens = usage.get("input_tokens", 0) or 0
+                        rec.out_tokens = usage.get("output_tokens", 0) or 0
+                        rec.cost = message.total_cost_usd
+                        rec.turns = getattr(message, "num_turns", 0) or 0
         except Exception as e:
             log.warning("LLM call failed: %s", e)
             return None
+        rec.duration_ms = int((time.monotonic() - started) * 1000)
         if auth_mode() == "subscription":
-            cost = None
-        log.info("llm done auth=%s agentic=%s turns=%d in=%d out=%d cost=%s",
-                 auth_mode(), agentic, turns, in_tok, out_tok,
-                 f"${cost:.4f}" if cost is not None else "-")
-        return text, in_tok, out_tok, cost
+            rec.cost = None
+        log.info("llm done auth=%s agentic=%s turns=%d tools=%d in=%d out=%d cost=%s",
+                 rec.auth, agentic, rec.turns, len(rec.tool_calls),
+                 rec.in_tokens, rec.out_tokens,
+                 f"${rec.cost:.4f}" if rec.cost is not None else "-")
+        return rec
 
     async def aclose(self):
         pass                                      # no persistent client to close

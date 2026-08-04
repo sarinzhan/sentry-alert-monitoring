@@ -15,14 +15,15 @@ from app.utils import esc
 
 
 class AnalysisService:
-    def __init__(self, issues, context, gitlab, llm, sentry):
+    def __init__(self, issues, context, gitlab, llm, sentry, audit=None):
         self._issues = issues      # IssuesRepo (resolve_ref)
         self._context = context    # ContextRepo (ctx + analysis cache)
         self._gitlab = gitlab      # GitLabClient
         self._llm = llm            # LlmClient
         self._sentry = sentry      # SentryApiClient (related_errors tool)
+        self._audit = audit        # LlmAuditRepo (per-call audit trail)
 
-    async def analyze(self, p: dict, use_tools: bool = False):
+    async def analyze(self, p: dict, use_tools: bool = False, chat_id=None):
         """Cause + fix for a parsed event. Returns text, or None if unavailable.
         Cached per issue+commit so repeats reuse the answer until the code changes.
         use_tools=True attaches the GitLab tool set (agentic loop, /ai path)."""
@@ -32,7 +33,7 @@ class AnalysisService:
             row = self._context.get_analysis(issue_id, blame_sha)
             if row:
                 log.info("llm cache hit issue=%s commit=%s", issue_id, blame_sha[:8])
-                p["llm_meta"] = {"cached": True, "cost": row[1]}
+                p["llm_meta"] = {"cached": True, "cost": row[1], "llm_id": row[2]}
                 return row[0]
 
         # source window + the diff of the commit that last touched the crash line,
@@ -104,18 +105,20 @@ class AnalysisService:
         if not self._llm.enabled:
             return None
 
-        res = await self._llm.complete(prompt, mcp_servers=servers, allowed_tools=allowed)
-        if res is None:
+        rec = await self._llm.complete(prompt, mcp_servers=servers, allowed_tools=allowed)
+        if rec is None:
             return None
-        text, in_tok, out_tok, cost = res
-        result = ("🤖 " + esc(text)) if text else None
-        p["llm_meta"] = {"cached": False, "cost": cost, "in": in_tok, "out": out_tok}
-        log.info("llm analysis issue=%s", issue_id)   # auth/tokens logged by LlmClient
+        result = ("🤖 " + esc(rec.text)) if rec.text else None
+        llm_id = self._audit.put("ai" if use_tools else "alert", rec,
+                                 issue_id=issue_id, chat_id=chat_id) if self._audit else None
+        p["llm_meta"] = {"cached": False, "cost": rec.cost, "in": rec.in_tokens,
+                         "out": rec.out_tokens, "llm_id": llm_id}
+        log.info("llm analysis issue=%s id=%s", issue_id, llm_id)
         if result and issue_id:
-            self._context.put_analysis(issue_id, blame_sha, result, cost)
+            self._context.put_analysis(issue_id, blame_sha, result, rec.cost, llm_id)
         return result
 
-    async def analyze_ref(self, ref):
+    async def analyze_ref(self, ref, chat_id=None):
         """Run (or reuse cached) analysis for an issue by id, on demand (/ai).
         Returns the analysis text, a status string, or None if the id is unknown."""
         info = self._issues.resolve_ref(ref)
@@ -129,7 +132,7 @@ class AnalysisService:
         p["_loc"] = await self._gitlab.locate_source(p)
         if p.get("_loc"):
             p["blame"] = await self._gitlab.fetch_blame(p["_loc"])
-        analysis = await self.analyze(p, use_tools=True)
+        analysis = await self.analyze(p, use_tools=True, chat_id=chat_id)
         if not analysis:
             return "Пустой ответ от LLM."
         m = p.get("llm_meta") or {}
@@ -138,4 +141,6 @@ class AnalysisService:
         else:
             toks = f"{m.get('in', 0)} in / {m.get('out', 0)} out"
             cost = f"💰 {money(m['cost'])} · {toks}" if m.get("cost") else f"💰 {toks}"
+        if m.get("llm_id"):
+            cost += f" · 🔍 <code>/llm {m['llm_id']}</code>"
         return f"{analysis}\n<i>{cost}</i>"

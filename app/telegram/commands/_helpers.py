@@ -36,3 +36,13 @@ def deps_of(ctx):
 def actor(update: Update):
     """Human name of whoever issued the command (for 'by' audit fields)."""
     return update.effective_user.full_name if update.effective_user else "?"
+
+
+def llm_cost_line(rec, llm_id=None):
+    """The italic cost/tokens footer with the audit id, for LLM-backed replies."""
+    from app.services.llm import money
+    toks = f"{rec.in_tokens} in / {rec.out_tokens} out"
+    line = f"💰 {money(rec.cost)} · {toks}" if rec.cost else f"💰 {toks}"
+    if llm_id:
+        line += f" · 🔍 <code>/llm {llm_id}</code>"
+    return f"<i>{line}</i>"

@@ -1,6 +1,7 @@
-"""Sentry tool set for the LLM — cross-service error lookup by trace id.
+"""Sentry tool set for the LLM — cross-service lookups.
 
-One tool: related_errors(trace_id). All services report to the same Sentry, so
+Three tools: related_errors(trace_id), user_events(msisdn, ...) and
+event_details(project, event_id). All services report to the same Sentry, so
 when billing crashes because payments threw upstream, the upstream error is
 usually right there as another project's event on the same trace. Each hit is
 annotated with the mapped GitLab repo (via project slug -> id -> repo), so the
@@ -11,10 +12,64 @@ from claude_agent_sdk import tool, create_sdk_mcp_server
 from app.config import GITLAB_PROJECTS, log
 
 MAX_EVENTS = 20
+MAX_FRAMES = 12
+MAX_CRUMBS = 20
+MAX_DETAILS = 5000
 
 
 def _text(s: str):
     return {"content": [{"type": "text", "text": s}]}
+
+
+async def _fmt_hits(sentry_api, events):
+    """One line per Discover hit, annotated with the mapped GitLab repo and the
+    event id (for event_details)."""
+    parts = []
+    for ev in events if isinstance(events, list) else []:
+        slug = ev.get("project")
+        pid = await sentry_api.project_id_for_slug(slug)
+        repo = GITLAB_PROJECTS.get(str(pid)) if pid else None
+        parts.append(
+            f"{(ev.get('timestamp') or '').replace('T', ' ')[:19]}  "
+            f"[{slug}]  {ev.get('title') or ev.get('message') or '?'}  "
+            f"(event {ev.get('id') or '?'}, issue {ev.get('issue') or '?'}, "
+            f"repo: {repo or 'not mapped'})"
+        )
+    return parts
+
+
+def fmt_event_details(ev):
+    """Compact text view of one full event: exception chain + top frames,
+    request, tags, breadcrumbs. Shared by the tool and the /why, /activity
+    prompt builders."""
+    parts = [f"title: {ev.get('title')}", f"time: {ev.get('dateCreated')}"]
+    tags = ev.get("tags") or []
+    if tags:
+        parts.append("tags: " + ", ".join(
+            f"{t.get('key')}={t.get('value')}" for t in tags))
+    for entry in ev.get("entries") or []:
+        etype = entry.get("type")
+        data = entry.get("data") or {}
+        if etype == "exception":
+            for exc in data.get("values") or []:
+                parts.append(f"exception: {exc.get('type')}: {exc.get('value')}")
+                frames = (exc.get("stacktrace") or {}).get("frames") or []
+                for f in frames[-MAX_FRAMES:]:      # crash site is last
+                    where = f.get("module") or f.get("filename") or "?"
+                    parts.append(f"  at {where}:{f.get('lineNo')} "
+                                 f"in {f.get('function')}"
+                                 + (" [in-app]" if f.get("inApp") else ""))
+        elif etype == "breadcrumbs":
+            crumbs = (data.get("values") or [])[-MAX_CRUMBS:]
+            if crumbs:
+                parts.append("breadcrumbs (oldest first):")
+                for c in crumbs:
+                    msg = c.get("message") or c.get("data") or ""
+                    parts.append(f"  {str(c.get('timestamp') or '')[:19]} "
+                                 f"[{c.get('category')}] {msg}")
+        elif etype == "request":
+            parts.append(f"request: {data.get('method')} {data.get('url')}")
+    return "\n".join(str(p) for p in parts)[:MAX_DETAILS]
 
 
 def build_sentry_server(sentry_api):
@@ -44,17 +99,7 @@ def build_sentry_server(sentry_api):
             events = await sentry_api.events_for_trace(trace_id, limit=MAX_EVENTS)
         except Exception as e:
             return _text(f"Error querying Sentry for trace {trace_id}: {e}")
-        parts = []
-        for ev in events if isinstance(events, list) else []:
-            slug = ev.get("project")
-            pid = await sentry_api.project_id_for_slug(slug)
-            repo = GITLAB_PROJECTS.get(str(pid)) if pid else None
-            parts.append(
-                f"{(ev.get('timestamp') or '').replace('T', ' ')[:19]}  "
-                f"[{slug}]  {ev.get('title') or ev.get('message') or '?'}  "
-                f"(issue {ev.get('issue') or '?'}, "
-                f"repo: {repo or 'not mapped'})"
-            )
+        parts = await _fmt_hits(sentry_api, events)
         log.info("sentry tool related_errors trace=%s hits=%d", trace_id, len(parts))
         if not parts:
             return _text(f"No events found for trace {trace_id} in the last 24h — "
@@ -62,6 +107,72 @@ def build_sentry_server(sentry_api):
                          "is older. Analyze from the current service's code.")
         return _text("\n".join(parts))
 
+    @tool(
+        "user_events",
+        "Error events of ONE user (msisdn) across all services. Give either a "
+        "start+end window (ISO 8601 UTC) or a period like '3h'/'24h'. Use this "
+        "to see what else happened to the user around the failure. Each hit "
+        "shows the event id for event_details.",
+        {
+            "type": "object",
+            "properties": {
+                "msisdn": {"type": "string", "description": "The user's msisdn"},
+                "start": {"type": "string",
+                          "description": "Window start, ISO 8601 UTC (with end)"},
+                "end": {"type": "string",
+                        "description": "Window end, ISO 8601 UTC (with start)"},
+                "period": {"type": "string",
+                           "description": "Alternative to start/end: '1h'/'3h'/'24h'"},
+            },
+            "required": ["msisdn"],
+        },
+    )
+    async def user_events(args):
+        msisdn = (args.get("msisdn") or "").strip()
+        start, end = args.get("start"), args.get("end")
+        try:
+            _, events = await sentry_api.events_for_user(
+                msisdn,
+                start=start if (start and end) else None,
+                end=end if (start and end) else None,
+                stats_period=None if (start and end) else (args.get("period") or "24h"),
+                limit=MAX_EVENTS)
+        except Exception as e:
+            return _text(f"Error querying Sentry for user {msisdn}: {e}")
+        parts = await _fmt_hits(sentry_api, events)
+        log.info("sentry tool user_events msisdn=%s hits=%d", msisdn, len(parts))
+        if not parts:
+            return _text(f"No error events for user {msisdn} in that window.")
+        return _text("\n".join(parts))
+
+    @tool(
+        "event_details",
+        "Full detail of one Sentry event: exception chain with stack frames, "
+        "request URL, tags, breadcrumbs (the user's preceding actions). Call "
+        "this on event ids from user_events/related_errors to see what "
+        "actually happened.",
+        {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string",
+                            "description": "Project slug from the hit line"},
+                "event_id": {"type": "string", "description": "The event id"},
+            },
+            "required": ["project", "event_id"],
+        },
+    )
+    async def event_details(args):
+        slug = (args.get("project") or "").strip()
+        event_id = (args.get("event_id") or "").strip()
+        try:
+            ev = await sentry_api.event_details(slug, event_id)
+        except Exception as e:
+            return _text(f"Error fetching event {event_id} from {slug}: {e}")
+        log.info("sentry tool event_details project=%s event=%s", slug, event_id)
+        return _text(fmt_event_details(ev))
+
     server = create_sdk_mcp_server(name="sentry", version="1.0.0",
-                                   tools=[related_errors])
-    return {"sentry": server}, ["mcp__sentry__related_errors"]
+                                   tools=[related_errors, user_events, event_details])
+    return {"sentry": server}, ["mcp__sentry__related_errors",
+                                "mcp__sentry__user_events",
+                                "mcp__sentry__event_details"]

@@ -16,3 +16,7 @@ class Deps:
     analysis: object        # AnalysisService
     pipeline: object        # EventPipeline (for the /webhook path)
     llm: object             # LlmClient (/ask)
+    llm_audit: object       # LlmAuditRepo (/llm + audit ids on replies)
+    context: object         # ContextRepo (api_doc cache)
+    sentry: object          # SentryApiClient (/req, /why, /activity)
+    gitlab: object          # GitLabClient (/api docs generation)

@@ -88,10 +88,48 @@ class Database:
             )
             """
         )
-        try:
-            db.execute("ALTER TABLE analysis_cache ADD COLUMN cost REAL")
-        except sqlite3.OperationalError:
-            pass
+        for stmt in (
+            "ALTER TABLE analysis_cache ADD COLUMN cost REAL",
+            "ALTER TABLE analysis_cache ADD COLUMN llm_id TEXT",
+        ):
+            try:
+                db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
+
+        # full audit of every LLM call: what it got, what tools it used, what it
+        # answered. Keyed by a short id shown in the reply (/llm <id>, GET /api/llm/{id}).
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_call (
+                id          TEXT PRIMARY KEY,
+                at          REAL NOT NULL,
+                kind        TEXT NOT NULL,
+                issue_id    TEXT,
+                chat_id     TEXT,
+                model       TEXT,
+                auth        TEXT,
+                agentic     INTEGER,
+                prompt      TEXT,
+                tools_offered TEXT,
+                tool_calls  TEXT,
+                turns       INTEGER,
+                in_tokens   INTEGER,
+                out_tokens  INTEGER,
+                cost_usd    REAL,
+                duration_ms INTEGER,
+                response    TEXT
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_llm_call_at ON llm_call(at)")
+
+        # generated API documentation cache (/api command), keyed by the
+        # normalized query the user typed.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS api_doc ("
+            " query TEXT PRIMARY KEY, doc TEXT NOT NULL, llm_id TEXT, at REAL NOT NULL)"
+        )
 
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(
