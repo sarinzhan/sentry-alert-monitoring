@@ -33,7 +33,7 @@ from app.sentry.analysis import AnalysisService
 from app.sentry.pipeline import EventPipeline
 from app.telegram.bot import ChatBotHandler
 from app.telegram.deps import Deps
-from app.telegram.commands import register_all
+from app.telegram.commands import register_all, set_bot_commands
 
 
 @asynccontextmanager
@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
     app.state.services = (sentry_api, gitlab, llm)
 
     await bot.start(polling=TELEGRAM_POLLING)
+    await set_bot_commands(bot.bot)
     log.info("startup complete")
     yield
 

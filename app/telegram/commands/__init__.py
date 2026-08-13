@@ -5,7 +5,9 @@ the Deps bundle into bot_data and registers the handlers, each wrapped so every
 invocation is logged (who, where, which args). Replies are logged in
 _helpers.reply.
 """
-from telegram.ext import CommandHandler
+from telegram import BotCommand, Update
+from telegram.error import TelegramError
+from telegram.ext import CommandHandler, filters
 
 from app.config import log
 from app.telegram.commands import (
@@ -13,6 +15,10 @@ from app.telegram.commands import (
     status, ai, ask, projects, watch, usermap, llm_log, request, api_doc,
     why, activity,
 )
+
+# CommandHandler's default filter only covers regular/edited messages; the bot
+# also posts alerts to channels, where commands arrive as channel_post updates.
+_CMD_FILTERS = filters.UpdateType.MESSAGES | filters.UpdateType.CHANNEL_POSTS
 
 # (command names, handler). A list of names registers aliases to one handler.
 _COMMANDS = [
@@ -38,6 +44,39 @@ _COMMANDS = [
     (["map"], usermap.on_map),
 ]
 
+# The "/" command menu Telegram shows in a chat with the bot (setMyCommands).
+_MENU = [
+    ("start", "Что умеет бот и как начать"),
+    ("help", "Все команды"),
+    ("subscribe", "Подписать чат на проект"),
+    ("unsubscribe", "Отписать чат от проекта"),
+    ("subscriptions", "Подписки этого чата"),
+    ("projects", "Список проектов"),
+    ("alerts", "Какие типы алертов получать"),
+    ("params", "Текущие правила чата"),
+    ("set", "Изменить правило чата"),
+    ("status", "Статус ошибки по id"),
+    ("ai", "AI-разбор ошибки: причина и фикс"),
+    ("ask", "Свободный вопрос AI"),
+    ("req", "Все события одного запроса"),
+    ("why", "Почему у абонента ошибка"),
+    ("activity", "Хронология ошибок абонента"),
+    ("api", "Документация эндпоинта из кода"),
+    ("llm", "Детали LLM-вызова по id"),
+    ("watch", "Force-send по ключевому слову"),
+    ("watched", "Список ключевых слов"),
+    ("map", "Автор коммита → @telegram"),
+]
+
+
+async def set_bot_commands(bot):
+    """Register the command menu (the '/' button users see in a chat with the bot)."""
+    try:
+        await bot.set_my_commands([BotCommand(c, d) for c, d in _MENU])
+        log.info("telegram command menu registered (%d commands)", len(_MENU))
+    except TelegramError as e:
+        log.error("set_my_commands failed: %s", e)
+
 
 def _logged(handler):
     """Wrap a handler so every invocation lands in the log."""
@@ -52,8 +91,21 @@ def _logged(handler):
     return wrapped
 
 
+async def _on_error(update, ctx):
+    """Log handler exceptions and tell the chat — otherwise a failed command
+    just looks like the bot ignored it."""
+    log.error("command handler error: %s", ctx.error, exc_info=ctx.error)
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "⚠️ Команда завершилась с ошибкой. Попробуйте ещё раз или см. /help.")
+        except TelegramError:
+            pass
+
+
 def register_all(app, deps):
     """Inject deps and register every command handler."""
     app.bot_data["deps"] = deps
     for names, handler in _COMMANDS:
-        app.add_handler(CommandHandler(names, _logged(handler)))
+        app.add_handler(CommandHandler(names, _logged(handler), filters=_CMD_FILTERS))
+    app.add_error_handler(_on_error)

@@ -47,7 +47,12 @@ async def on_start(update, ctx):
         "",
         "<b>🔎 Ещё команды</b>",
         "<code>/status &lt;id&gt;</code> — детали ошибки · <code>/ai &lt;id&gt;</code> — AI-разбор "
-        "причины и фикса · <code>/watch</code> — слать по ключевому слову · "
+        "причины и фикса · <code>/ask &lt;вопрос&gt;</code> — свободный вопрос AI.",
+        "<code>/req &lt;request_id&gt;</code> — все события одного запроса по сервисам · "
+        "<code>/why &lt;msisdn&gt; &lt;время&gt;</code> — почему у абонента ошибка · "
+        "<code>/activity &lt;msisdn&gt;</code> — хронология ошибок абонента.",
+        "<code>/api &lt;путь&gt;</code> — документация эндпоинта из кода · "
+        "<code>/watch</code> — слать по ключевому слову · "
         "<code>/map</code> — автор коммита → @telegram · <code>/help</code> — все команды.",
         "",
         "<i>id — это короткий код <code>#abcdef</code> из 2-й строки любого алерта.</i>",
