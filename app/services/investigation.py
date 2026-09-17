@@ -22,6 +22,12 @@ DEFAULT_PERIOD = "3d"
 EVENT_LIMIT = 100
 LOG_LIMIT = 60
 
+# msisdn error-event search: the configured attribute keys first; when none of
+# them hit, full-text over the event message — some services only mention the
+# msisdn inside the text (find_events tries keys in order until one returns hits;
+# the log search is full-text already via SENTRY_LOGS_MSISDN_QUERY)
+MSISDN_KEYS = list(SENTRY_MSISDN_FIELDS) + ["message"]
+
 
 class ValidationError(ValueError):
     pass
@@ -68,7 +74,7 @@ async def investigate(sentry, *, description, request_id=None, device_id=None,
     description = (description or "").strip()
     ids = [("request_id", SENTRY_REQUEST_ID_FIELDS, (request_id or "").strip()),
            ("device_id", SENTRY_DEVICE_ID_FIELDS, (device_id or "").strip()),
-           ("msisdn", SENTRY_MSISDN_FIELDS, (msisdn or "").strip())]
+           ("msisdn", MSISDN_KEYS, (msisdn or "").strip())]
     if not description:
         raise ValidationError("описание обязательно")
     if not any(v for _, _, v in ids):
