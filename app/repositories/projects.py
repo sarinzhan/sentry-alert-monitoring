@@ -50,27 +50,32 @@ class ProjectsRepo:
         config.GITLAB_PROJECTS.update(repos)
 
     def all(self):
-        return [{"id": pid, "name": name, "gitlab_repo": repo,
+        return [{"id": pid, "slug": slug, "name": name, "gitlab_repo": repo,
                  "first_seen": first, "updated": updated}
-                for pid, name, repo, first, updated in self.db.execute(
-                    "SELECT id, name, gitlab_repo, first_seen, updated "
+                for pid, slug, name, repo, first, updated in self.db.execute(
+                    "SELECT id, slug, name, gitlab_repo, first_seen, updated "
                     "FROM project ORDER BY CAST(id AS INTEGER), id")]
 
-    def ensure(self, pid, name=None):
-        """Auto-register a project seen in a webhook/API response. Fills the
-        name if the row doesn't have one yet; never overwrites user edits."""
+    def ensure(self, pid, slug=None):
+        """Auto-register a project seen in a webhook/API response. The sentry
+        slug is authoritative — kept up to date whenever we learn it — and
+        also fills an empty display name; user edits are never overwritten."""
         pid = str(pid).strip()
         if not pid:
             return
         now = time.time()
-        row = self.db.execute("SELECT name FROM project WHERE id=?", (pid,)).fetchone()
+        row = self.db.execute("SELECT slug, name FROM project WHERE id=?",
+                              (pid,)).fetchone()
         if row is None:
             self.db.execute(
-                "INSERT INTO project(id, name, gitlab_repo, first_seen, updated)"
-                " VALUES (?, ?, NULL, ?, ?)", (pid, name, now, now))
-        elif name and not row[0]:
+                "INSERT INTO project(id, slug, name, gitlab_repo, first_seen, updated)"
+                " VALUES (?, ?, ?, NULL, ?, ?)", (pid, slug, slug, now, now))
+        elif slug and slug != row[0]:
+            self.db.execute("UPDATE project SET slug=?, name=COALESCE(name, ?), "
+                            "updated=? WHERE id=?", (slug, slug, now, pid))
+        elif slug and not row[1]:
             self.db.execute("UPDATE project SET name=?, updated=? WHERE id=?",
-                            (name, now, pid))
+                            (slug, now, pid))
         else:
             return
         self.db.commit()
@@ -95,7 +100,7 @@ class ProjectsRepo:
             self.db.commit()
             self._sync()
         row = self.db.execute(
-            "SELECT id, name, gitlab_repo, first_seen, updated FROM project WHERE id=?",
+            "SELECT id, slug, name, gitlab_repo, first_seen, updated FROM project WHERE id=?",
             (pid,)).fetchone()
-        return {"id": row[0], "name": row[1], "gitlab_repo": row[2],
-                "first_seen": row[3], "updated": row[4]}
+        return {"id": row[0], "slug": row[1], "name": row[2], "gitlab_repo": row[3],
+                "first_seen": row[4], "updated": row[5]}

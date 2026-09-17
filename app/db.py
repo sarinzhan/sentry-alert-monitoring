@@ -140,6 +140,12 @@ class Database:
             " id TEXT PRIMARY KEY, name TEXT, gitlab_repo TEXT,"
             " first_seen REAL NOT NULL, updated REAL NOT NULL)"
         )
+        try:
+            # the sentry-side slug, auto-filled from the API (read-only in the
+            # web UI; `name` stays the user-editable display name)
+            db.execute("ALTER TABLE project ADD COLUMN slug TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(

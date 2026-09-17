@@ -27,9 +27,10 @@ function Row({ project, onSaved }) {
   return (
     <tr>
       <td className="ts">{project.id}</td>
+      <td className="proj">{project.slug || '—'}</td>
       <td>
         <input value={name} onChange={(e) => setName(e.target.value)}
-               placeholder="имя проекта" />
+               placeholder={project.slug || 'имя проекта'} />
       </td>
       <td>
         <input value={repo} onChange={(e) => setRepo(e.target.value)}
@@ -70,7 +71,7 @@ export default function ProjectsPanel() {
       </p>
       <table>
         <thead>
-          <tr><th>ID</th><th>Имя</th><th>GitLab репозиторий</th><th></th></tr>
+          <tr><th>ID</th><th>Slug (Sentry)</th><th>Имя</th><th>GitLab репозиторий</th><th></th></tr>
         </thead>
         <tbody>
           {projects.map((p) => <Row key={p.id} project={p} onSaved={onSaved} />)}
