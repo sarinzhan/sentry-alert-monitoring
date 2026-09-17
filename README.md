@@ -175,8 +175,12 @@ asks the agentic LLM (same GitLab + Sentry tools as `/why`) for a verdict
 written for tech-support staff: what happened, why (business rule vs code
 error), what to tell the customer, and whether/where to escalate. Needs
 `ENABLE_LLM=true`; the call is audited like every other (`web-explain` kind,
-id shown under the answer). Backend: `POST /api/explain`; slow — the nginx
-locations in front of it need `proxy_read_timeout 300s`.
+id shown under the answer). The run streams live (SSE, `POST
+/api/explain/stream`): the UI shows each thought and tool call as it happens,
+chat-style, collapsing into «Ход рассуждений» when done (`POST /api/explain`
+is the non-streaming twin). Slow — nginx in front needs
+`proxy_read_timeout 300s` and `proxy_buffering off` (the host-nginx
+`/admin-web/` location too, or events arrive only at the end).
 
 The UI lives in `web-ui/` (React + Vite) and runs as its own container:
 `web-ui/Dockerfile` builds the React app in a Node stage, then nginx serves

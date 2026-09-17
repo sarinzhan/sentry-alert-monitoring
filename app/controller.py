@@ -11,11 +11,12 @@ Endpoints:
   POST /api/investigate  form backend -> Sentry search
 """
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import BOT_TOKEN, TELEGRAM_POLLING, TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, log
@@ -197,6 +198,92 @@ async def explain_endpoint(request: Request):
     return {"explanation": rec.text, "llm_id": llm_id}
 
 
+def _sse(ev):
+    return f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+
+
+@app.post("/api/explain/stream")
+async def explain_stream(request: Request):
+    """Streaming twin of /api/explain (SSE): emits the model's reasoning live
+    — status, each thought, each tool call and its result — then the final
+    explanation, so the UI can show the run like a chat instead of a spinner.
+    Events: {type: status|text|tool|tool_result|done|error, ...}."""
+    from app.services.investigation import investigate, explain, ValidationError
+    from app.services.sentry_api import discover_error_hint
+    sentry_api, gitlab, llm = request.app.state.services
+    llm_audit = request.app.state.llm_audit
+    if not sentry_api.enabled or not llm.enabled:
+        return JSONResponse({"error": "Sentry API или LLM не настроены."},
+                            status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    async def gen():
+        yield _sse({"type": "status", "message": "ищу в Sentry…"})
+        try:
+            search = await investigate(
+                sentry_api,
+                description=body.get("description"),
+                request_id=body.get("request_id"),
+                device_id=body.get("device_id"),
+                msisdn=body.get("msisdn"),
+                period=body.get("period"),
+                date_from=body.get("date_from"),
+                date_to=body.get("date_to"),
+                environment=body.get("environment"))
+        except ValidationError as e:
+            yield _sse({"type": "error", "error": str(e)})
+            return
+        except Exception as e:
+            yield _sse({"type": "error", "error": discover_error_hint(e)})
+            return
+        if not search["events"] and not search["logs"]:
+            yield _sse({"type": "error",
+                        "error": "Ничего не найдено — нечего анализировать."})
+            return
+        yield _sse({"type": "status",
+                    "message": f"нашёл ошибок: {search['count']}, строк логов: "
+                               f"{len(search['logs'])} — запускаю анализ…"})
+
+        queue = asyncio.Queue()
+        task = asyncio.create_task(
+            explain(sentry_api, gitlab, llm, search=search,
+                    on_event=queue.put_nowait))
+        try:
+            while True:
+                get = asyncio.ensure_future(queue.get())
+                done, _ = await asyncio.wait({get, task},
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if get in done:
+                    yield _sse(get.result())
+                    continue
+                get.cancel()
+                break
+            while not queue.empty():           # drain events raced with finish
+                yield _sse(queue.get_nowait())
+            try:
+                rec = task.result()
+            except Exception as e:
+                yield _sse({"type": "error", "error": str(e)[:300]})
+                return
+            if rec is None or not rec.text:
+                yield _sse({"type": "error",
+                            "error": "Не получилось получить ответ от LLM — "
+                                     "смотрите логи sentry-telegram."})
+                return
+            llm_id = llm_audit.put("web-explain", rec)
+            yield _sse({"type": "done", "explanation": rec.text,
+                        "llm_id": llm_id})
+        finally:
+            task.cancel()                      # client gone -> stop the LLM run
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
+
+
 @app.get("/api/projects")
 async def projects_list(request: Request):
     """The project catalog: sentry project id -> display name + gitlab repo.
@@ -298,6 +385,8 @@ if _WEB_DIR.is_dir():
     app.add_api_route("/admin-web/api/investigate", investigate_endpoint,
                       methods=["POST"])
     app.add_api_route("/admin-web/api/explain", explain_endpoint,
+                      methods=["POST"])
+    app.add_api_route("/admin-web/api/explain/stream", explain_stream,
                       methods=["POST"])
     app.add_api_route("/admin-web/api/projects", projects_list, methods=["GET"])
     app.add_api_route("/admin-web/api/projects/{pid}", projects_update,

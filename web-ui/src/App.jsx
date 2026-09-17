@@ -2,7 +2,8 @@ import { useState } from 'react'
 import InvestigateForm from './InvestigateForm.jsx'
 import Results from './Results.jsx'
 import ProjectsPanel from './ProjectsPanel.jsx'
-import { investigate, explain } from './api.js'
+import Reasoning from './Reasoning.jsx'
+import { investigate, explainStream } from './api.js'
 
 export default function App() {
   const [view, setView] = useState('search')
@@ -13,6 +14,7 @@ export default function App() {
   const [explanation, setExplanation] = useState(null)
   const [explaining, setExplaining] = useState(false)
   const [explainError, setExplainError] = useState('')
+  const [steps, setSteps] = useState([])
 
   async function onSubmit(body) {
     setBusy(true)
@@ -20,6 +22,7 @@ export default function App() {
     setResult(null)
     setExplanation(null)
     setExplainError('')
+    setSteps([])
     setLastBody(body)
     try {
       setResult(await investigate(body))
@@ -34,8 +37,13 @@ export default function App() {
     if (!lastBody || explaining) return
     setExplaining(true)
     setExplainError('')
+    setSteps([])
     try {
-      setExplanation(await explain(lastBody))
+      await explainStream(lastBody, (ev) => {
+        if (ev.type === 'done') setExplanation(ev)
+        else if (ev.type === 'error') setExplainError(ev.error)
+        else setSteps((s) => [...s, ev])
+      })
     } catch (e) {
       setExplainError(e.message)
     } finally {
@@ -69,11 +77,12 @@ export default function App() {
           {found && !explanation && (
             <div className="explain-bar">
               <button onClick={onExplain} disabled={explaining}>
-                {explaining ? 'Анализирую… это может занять пару минут' : '🤖 Объяснить простыми словами'}
+                {explaining ? 'Анализирую…' : '🤖 Объяснить простыми словами'}
               </button>
               <span className="error">{explainError}</span>
             </div>
           )}
+          <Reasoning steps={steps} running={explaining} />
           {explanation && (
             <div className="explanation">
               <h2>Объяснение</h2>

@@ -161,9 +161,10 @@ TOOLS_NOTE = (
 )
 
 
-async def explain(sentry, gitlab, llm, *, search):
+async def explain(sentry, gitlab, llm, *, search, on_event=None):
     """LLM explanation of a finished investigate() result, written for
-    support staff. Returns the LlmCall record, or None on LLM failure."""
+    support staff. Returns the LlmCall record, or None on LLM failure.
+    on_event streams the model's live progress (see LlmClient.complete)."""
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import (
         build_sentry_server, fmt_event_details, fmt_log_line,
@@ -213,4 +214,4 @@ async def explain(sentry, gitlab, llm, *, search):
         events=("\n".join(lines) or "—"), logs=("\n".join(log_lines) or "—"),
         details=("\n---\n".join(details) or "—"), tools=tools_note)
     return await llm.complete(prompt, mcp_servers=servers or None,
-                              allowed_tools=allowed or None)
+                              allowed_tools=allowed or None, on_event=on_event)

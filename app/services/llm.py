@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from claude_agent_sdk import (
     query, ClaudeAgentOptions, ResultMessage, AssistantMessage, UserMessage,
-    ToolUseBlock, ToolResultBlock,
+    ToolUseBlock, ToolResultBlock, TextBlock,
 )
 
 from app.config import (
@@ -53,6 +53,16 @@ class LlmCall:
     prompt: str = ""
     tools_offered: list = field(default_factory=list)
     tool_calls: list = field(default_factory=list)   # [{tool, args, result}]
+
+
+def _emit(on_event, ev):
+    """Fire a progress callback; a broken observer must never kill the call."""
+    if on_event is None:
+        return
+    try:
+        on_event(ev)
+    except Exception as e:
+        log.warning("llm on_event failed: %s", e)
 
 
 def _result_preview(content):
@@ -113,7 +123,8 @@ class LlmClient:
     def enabled(self):
         return self._enabled
 
-    async def complete(self, prompt: str, mcp_servers=None, allowed_tools=None):
+    async def complete(self, prompt: str, mcp_servers=None, allowed_tools=None,
+                       on_event=None):
         """Send one prompt. Returns an LlmCall record, or None on failure.
         With mcp_servers set, runs an agentic loop (up to AGENT_MAX_TURNS turns)
         where the model may call those tools; otherwise a single completion.
@@ -121,7 +132,11 @@ class LlmClient:
         (name, args, result preview) for the audit trail. cost is None with
         subscription auth: the flat-rate plan has no real per-call cost (the
         CLI still reports a hypothetical figure — dropped), so callers show
-        only the token counts."""
+        only the token counts.
+
+        on_event, if given, receives live progress dicts as the run unfolds —
+        {'type': 'text'|'tool'|'tool_result', ...} — so a UI can show the
+        model's reasoning like a chat (the web /api/explain/stream SSE)."""
         if not self._enabled:
             return None
         agentic = bool(mcp_servers)
@@ -149,6 +164,12 @@ class LlmClient:
                                 call = {"tool": block.name, "args": block.input}
                                 rec.tool_calls.append(call)
                                 calls_by_id[block.id] = call
+                                _emit(on_event, {"type": "tool",
+                                                 "tool": block.name,
+                                                 "args": block.input})
+                            elif isinstance(block, TextBlock) and (block.text or "").strip():
+                                _emit(on_event, {"type": "text",
+                                                 "text": block.text.strip()})
                     elif isinstance(message, UserMessage):
                         content = message.content
                         for block in content if isinstance(content, list) else []:
@@ -156,6 +177,9 @@ class LlmClient:
                                 call = calls_by_id.get(block.tool_use_id)
                                 if call is not None:
                                     call["result"] = _result_preview(block.content)
+                                    _emit(on_event, {"type": "tool_result",
+                                                     "tool": call["tool"],
+                                                     "result": call["result"]})
                     elif isinstance(message, ResultMessage):
                         rec.text = (message.result or "").strip()
                         usage = message.usage or {}

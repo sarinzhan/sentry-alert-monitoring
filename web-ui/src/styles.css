@@ -51,6 +51,20 @@ button:disabled { background: #333846; cursor: default; }
 .explanation h2 { margin: 0 0 8px; }
 .explanation-text { white-space: pre-wrap; word-break: break-word; }
 .explanation .hint { margin-top: 10px; }
+.reasoning {
+  margin-top: 16px; background: #1a1d24; border: 1px solid #2a2e38;
+  border-radius: 10px; padding: 12px 16px; font-size: 13px;
+}
+.reasoning summary { cursor: pointer; color: #a8adbb; }
+.steps { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.step { white-space: pre-wrap; word-break: break-word; }
+.step.think { color: #d0d4de; }
+.step.tool { color: #8fb4e8; }
+.step.tool .args { color: #6d7382; }
+.step.tool-result { color: #6d7382; padding-left: 20px; }
+.step.status-step { color: #a8adbb; }
+.blink { animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
 .summary { color: #a8adbb; font-size: 13px; margin-bottom: 12px; }
 .summary code, .results code { color: #d0d4de; }
 h2 { font-size: 16px; margin: 20px 0 8px; }
