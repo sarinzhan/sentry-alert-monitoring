@@ -9,7 +9,10 @@ model knows which 'repo' value to use with the GitLab tools next.
 """
 from claude_agent_sdk import tool, create_sdk_mcp_server
 
-from app.config import GITLAB_PROJECTS, SENTRY_LOGS_DATASET, log
+from app.config import (
+    GITLAB_PROJECTS, SENTRY_LOGS_DATASET,
+    SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS, SENTRY_DEVICE_ID_FIELDS, log,
+)
 from app.services.sentry_api import LOG_FIELDS
 
 MAX_EVENTS = 20
@@ -136,6 +139,58 @@ def build_sentry_server(sentry_api):
                          "the upstream error either wasn't reported to Sentry or "
                          "is older. Analyze from the current service's code.")
         return _text("\n".join(parts))
+
+    @tool(
+        "find_events",
+        "Error events matching ONE identifier across all services. kind is "
+        "'request_id', 'device_id' or 'msisdn' — the configured Sentry search "
+        "keys for that kind are tried in order, then full-text over the event "
+        "message (some services only mention identifiers in the text). Give "
+        "start+end (ISO 8601 UTC) or a period like '1h'/'3d'. Each hit shows "
+        "the event id for event_details and the GitLab repo to read next.",
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string",
+                         "enum": ["request_id", "device_id", "msisdn"],
+                         "description": "Which identifier this is"},
+                "value": {"type": "string", "description": "The identifier value"},
+                "start": {"type": "string",
+                          "description": "Window start, ISO 8601 UTC (with end)"},
+                "end": {"type": "string",
+                        "description": "Window end, ISO 8601 UTC (with start)"},
+                "period": {"type": "string",
+                           "description": "Alternative to start/end: '1h'/'24h'/'3d'"},
+            },
+            "required": ["kind", "value"],
+        },
+    )
+    async def find_events(args):
+        kind = (args.get("kind") or "").strip()
+        value = (args.get("value") or "").strip()
+        keys = {"request_id": SENTRY_REQUEST_ID_FIELDS,
+                "device_id": SENTRY_DEVICE_ID_FIELDS,
+                "msisdn": SENTRY_MSISDN_FIELDS}.get(kind)
+        if not keys or not value:
+            return _text("kind must be request_id|device_id|msisdn and value non-empty")
+        start, end = args.get("start"), args.get("end")
+        try:
+            key, events = await sentry_api.find_events(
+                list(keys) + ["message"], value,
+                start=start if (start and end) else None,
+                end=end if (start and end) else None,
+                stats_period=None if (start and end) else (args.get("period") or "3d"),
+                limit=MAX_EVENTS)
+        except Exception as e:
+            return _text(f"Error querying Sentry for {kind} {value}: {e}")
+        parts = await _fmt_hits(sentry_api, events)
+        log.info("sentry tool find_events kind=%s value=%s hits=%d",
+                 kind, value, len(parts))
+        if not parts:
+            return _text(f"No error events for {kind}={value} in that window "
+                         f"(tried keys: {', '.join(list(keys) + ['message'])}). "
+                         "Try a wider window or search_logs.")
+        return _text(f"matched search key: {key}\n" + "\n".join(parts))
 
     @tool(
         "user_events",
@@ -268,7 +323,7 @@ def build_sentry_server(sentry_api):
                          "version. Known-good fields: " + ", ".join(LOG_FIELDS))
         return _text("\n".join(attrs))
 
-    tools = [related_errors, user_events, event_details]
+    tools = [find_events, related_errors, user_events, event_details]
     if SENTRY_LOGS_DATASET:
         tools += [search_logs, log_fields]
     server = create_sdk_mcp_server(name="sentry", version="1.0.0", tools=tools)

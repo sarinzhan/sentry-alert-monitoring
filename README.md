@@ -170,10 +170,13 @@ seen auto-register with empty fields as their first events arrive — attach
 the GitLab link there to give the LLM code access for that service. Backend:
 `GET /api/projects`, `PUT /api/projects/{id}`.
 
-When the search finds something, an **«Объяснить простыми словами»** button
-asks the agentic LLM (same GitLab + Sentry tools as `/why`) for a verdict
-written for tech-support staff: what happened, why (business rule vs code
-error), what to tell the customer, and whether/where to escalate. Needs
+The **«Объяснить простыми словами»** button hands the complaint straight to
+the agentic LLM — only the description, identifiers and window; the model
+itself decides what to search and in what order (`find_events` by
+request_id/device_id/msisdn, `search_logs`, `event_details`,
+`related_errors`, read-only GitLab) — and answers with a verdict written for
+tech-support staff: what happened, why (business rule vs code error), what
+to tell the customer, and whether/where to escalate. Needs
 `ENABLE_LLM=true`; the call is audited like every other (`web-explain` kind,
 id shown under the answer). The run streams live (SSE, `POST
 /api/explain/stream`): the UI shows each thought and tool call as it happens,

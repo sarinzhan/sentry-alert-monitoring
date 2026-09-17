@@ -153,12 +153,11 @@ async def investigate_endpoint(request: Request):
 
 @app.post("/api/explain")
 async def explain_endpoint(request: Request):
-    """LLM explanation of the search results in plain Russian for support
-    staff (the /why analog). Body: same as /api/investigate. Re-runs the
-    search server-side, then asks the agentic LLM (GitLab + Sentry tools) for
-    a verdict a non-programmer understands. Slow: up to a few minutes."""
-    from app.services.investigation import investigate, explain, ValidationError
-    from app.services.sentry_api import discover_error_hint
+    """Agentic LLM investigation of a complaint, in plain Russian for support
+    staff (the /why analog). Body: same as /api/investigate. The model gets
+    ONLY the complaint + identifiers + window and decides itself what to
+    search (Sentry + GitLab tools). Slow: up to a few minutes."""
+    from app.services.investigation import explain, ValidationError
     sentry_api, gitlab, llm = request.app.state.services
     if not sentry_api.enabled:
         return JSONResponse({"error": "Sentry API не настроен (SENTRY_API_TOKEN)."},
@@ -171,8 +170,8 @@ async def explain_endpoint(request: Request):
     except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
     try:
-        search = await investigate(
-            sentry_api,
+        rec = await explain(
+            sentry_api, gitlab, llm,
             description=body.get("description"),
             request_id=body.get("request_id"),
             device_id=body.get("device_id"),
@@ -183,13 +182,6 @@ async def explain_endpoint(request: Request):
             environment=body.get("environment"))
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
-    except Exception as e:
-        return JSONResponse({"error": discover_error_hint(e)}, status_code=502)
-    if not search["events"] and not search["logs"]:
-        return JSONResponse({"error": "Ничего не найдено — нечего анализировать. "
-                                      "Попробуйте другой период или идентификатор."},
-                            status_code=422)
-    rec = await explain(sentry_api, gitlab, llm, search=search)
     if rec is None or not rec.text:
         return JSONResponse({"error": "Не получилось получить ответ от LLM — "
                                       "смотрите логи sentry-telegram."},
@@ -208,8 +200,7 @@ async def explain_stream(request: Request):
     — status, each thought, each tool call and its result — then the final
     explanation, so the UI can show the run like a chat instead of a spinner.
     Events: {type: status|text|tool|tool_result|done|error, ...}."""
-    from app.services.investigation import investigate, explain, ValidationError
-    from app.services.sentry_api import discover_error_hint
+    from app.services.investigation import explain, ValidationError
     sentry_api, gitlab, llm = request.app.state.services
     llm_audit = request.app.state.llm_audit
     if not sentry_api.enabled or not llm.enabled:
@@ -221,36 +212,23 @@ async def explain_stream(request: Request):
         return JSONResponse({"error": "bad json"}, status_code=400)
 
     async def gen():
-        yield _sse({"type": "status", "message": "ищу в Sentry…"})
-        try:
-            search = await investigate(
-                sentry_api,
-                description=body.get("description"),
-                request_id=body.get("request_id"),
-                device_id=body.get("device_id"),
-                msisdn=body.get("msisdn"),
-                period=body.get("period"),
-                date_from=body.get("date_from"),
-                date_to=body.get("date_to"),
-                environment=body.get("environment"))
-        except ValidationError as e:
-            yield _sse({"type": "error", "error": str(e)})
-            return
-        except Exception as e:
-            yield _sse({"type": "error", "error": discover_error_hint(e)})
-            return
-        if not search["events"] and not search["logs"]:
-            yield _sse({"type": "error",
-                        "error": "Ничего не найдено — нечего анализировать."})
-            return
-        yield _sse({"type": "status",
-                    "message": f"нашёл ошибок: {search['count']}, строк логов: "
-                               f"{len(search['logs'])} — запускаю анализ…"})
-
+        yield _sse({"type": "status", "message": "запускаю анализ…"})
         queue = asyncio.Queue()
-        task = asyncio.create_task(
-            explain(sentry_api, gitlab, llm, search=search,
-                    on_event=queue.put_nowait))
+        try:
+            task = asyncio.create_task(
+                explain(sentry_api, gitlab, llm,
+                        description=body.get("description"),
+                        request_id=body.get("request_id"),
+                        device_id=body.get("device_id"),
+                        msisdn=body.get("msisdn"),
+                        period=body.get("period"),
+                        date_from=body.get("date_from"),
+                        date_to=body.get("date_to"),
+                        environment=body.get("environment"),
+                        on_event=queue.put_nowait))
+        except Exception as e:
+            yield _sse({"type": "error", "error": str(e)[:300]})
+            return
         try:
             while True:
                 get = asyncio.ensure_future(queue.get())

@@ -51,7 +51,6 @@ export default function App() {
     }
   }
 
-  const found = result && (result.count > 0 || result.logs?.length > 0)
 
   return (
     <main>
@@ -74,7 +73,7 @@ export default function App() {
       <InvestigateForm onSubmit={onSubmit} busy={busy} serverError={error} />
       {result && (
         <>
-          {found && !explanation && (
+          {!explanation && (
             <div className="explain-bar">
               <button onClick={onExplain} disabled={explaining}>
                 {explaining ? 'Анализирую…' : '🤖 Объяснить простыми словами'}

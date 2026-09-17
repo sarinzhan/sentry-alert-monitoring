@@ -117,23 +117,38 @@ async def investigate(sentry, *, description, request_id=None, device_id=None,
 
 
 # --- LLM explanation for support staff (the /why analog of the web form) ---
-
-DETAIL_EVENTS = 3        # newest events fetched in full for the prompt
+# Agent-first: the model receives ONLY the complaint, the identifiers and the
+# chosen window — it decides itself what to search, in what order, and when
+# to stop (find_events / search_logs / event_details / related_errors +
+# read-only GitLab).
 
 EXPLAIN_PROMPT = (
     "You are a senior backend engineer helping FIRST-LINE TECH SUPPORT of a "
     "mobile operator. The support agent is NOT a programmer.\n\n"
     "Complaint: {description}\n"
     "Identifiers: {idents}\n"
-    "Search window: {window}; environment: {env}.\n\n"
-    "Sentry error events found (newest first):\n{events}\n\n"
-    "Application LOG lines of the same window (newest first; successful "
-    "operations appear here too — a business-logic rejection often logs "
-    "without producing an error event):\n{logs}\n\n"
-    "Full details of the newest event(s):\n{details}\n\n"
-    "{tools}"
-    "Figure out WHY the user hit the problem. An exception can be a "
-    "deliberate business rule — check before calling it a bug.\n\n"
+    "Time window the agent chose: {window} — use it in tool calls; widen it "
+    "if you find nothing. Environment: {env}.\n\n"
+    "Investigate the complaint YOURSELF with the tools — you decide what to "
+    "look at and in what order:\n"
+    "- find_events(kind, value, …): error events by request_id / device_id / "
+    "msisdn across all services\n"
+    "- search_logs(query, …): full-text over application LOG lines (INFO "
+    "too — a business-logic rejection often only logs, without an error "
+    "event)\n"
+    "- event_details(project, event_id): full stack, tags, breadcrumbs\n"
+    "- related_errors(trace_id): follow a failure upstream across services\n"
+    "- user_events(msisdn, …): everything else that happened to the user\n"
+    "- read-only GitLab over the mapped repos ({repos}, ref {ref}): "
+    "read_file, find_file, search_code, blame, commit_diff, recent_commits — "
+    "read the code path that threw before deciding; an exception can be a "
+    "deliberate business rule\n\n"
+    "Budget: a hard limit of {turns} turns — deliver the final answer within "
+    "it. Spend at most half on tool calls; if a tool errors twice, stop "
+    "using it; when the budget runs low, answer with the best conclusion "
+    "from what you have. If you find nothing at all, say so honestly and "
+    "suggest what the support agent should clarify (exact time, other "
+    "identifiers).\n\n"
     "Reply in SIMPLE RUSSIAN a non-programmer understands: no stack traces, "
     "no HTTP codes, no jargon (расшифруй, если без термина никак). Plain "
     "text, no markdown, exactly this structure:\n"
@@ -146,72 +161,51 @@ EXPLAIN_PROMPT = (
     "разработчикам — какой команде/сервису и с какой информацией"
 )
 
-TOOLS_NOTE = (
-    "You have tools: read-only GitLab (read_file, find_file, search_code, "
-    "blame, commit_diff, recent_commits) over the mapped service repos "
-    "({repos}, ref {ref}); Sentry event_details(project, event_id), "
-    "related_errors(trace_id), user_events(msisdn, …) and search_logs "
-    "(full-text over application logs). Read the code path that threw "
-    "before deciding.\n"
-    "IMPORTANT: you have a hard budget of {turns} turns and MUST deliver the "
-    "final answer within it. Spend at most half the budget on tool calls; if "
-    "a tool errors twice (e.g. GitLab auth), stop using it. When the budget "
-    "runs low, stop investigating and answer with the best conclusion from "
-    "what you already have — a partial answer beats no answer.\n\n"
-)
 
-
-async def explain(sentry, gitlab, llm, *, search, on_event=None):
-    """LLM explanation of a finished investigate() result, written for
-    support staff. Returns the LlmCall record, or None on LLM failure.
-    on_event streams the model's live progress (see LlmClient.complete)."""
+async def explain(sentry, gitlab, llm, *, description, request_id=None,
+                  device_id=None, msisdn=None, period=None, date_from=None,
+                  date_to=None, environment=None, on_event=None):
+    """Agentic LLM investigation of a complaint, written for support staff.
+    Returns the LlmCall record, or None on LLM failure. Raises
+    ValidationError on bad input. on_event streams the model's live progress
+    (see LlmClient.complete)."""
     from app.services.gitlab_tools import build_gitlab_server
-    from app.services.sentry_tools import (
-        build_sentry_server, fmt_event_details, fmt_log_line,
-    )
+    from app.services.sentry_tools import build_sentry_server
 
-    events, logs = search["events"], search["logs"]
-    lines, details, primary_repo = [], [], None
-    for ev in events[:20]:
-        slug = ev.get("project")
-        lines.append(f"{(ev.get('timestamp') or '').replace('T', ' ')[:19]}  "
-                     f"[{slug}]  {ev.get('title') or ev.get('message') or '?'}  "
-                     f"(event {ev.get('id')})")
-        if primary_repo is None:
-            pid = await sentry.project_id_for_slug(slug)
-            primary_repo = GITLAB_PROJECTS.get(str(pid)) if pid else None
-    for ev in events[:DETAIL_EVENTS]:
-        try:
-            full = await sentry.event_details(ev.get("project"), ev.get("id"))
-            details.append(fmt_event_details(full))
-        except Exception as e:
-            log.warning("web explain: event details failed event=%s: %s",
-                        ev.get("id"), e)
+    description = (description or "").strip()
+    idents = [(kind, (value or "").strip())
+              for kind, value in (("request_id", request_id),
+                                  ("device_id", device_id),
+                                  ("msisdn", msisdn)) if (value or "").strip()]
+    if not description:
+        raise ValidationError("описание обязательно")
+    if not idents:
+        raise ValidationError(
+            "укажите хотя бы одно из: request id, device id, номер (msisdn)")
+    window = build_window(period, date_from, date_to)
 
     servers, allowed = {}, []
     if ENABLE_LLM_TOOLS:
         repos = sorted(set(GITLAB_PROJECTS.values()))
         if gitlab.enabled and repos:
-            servers, allowed = build_gitlab_server(gitlab, primary_repo or repos[0])
+            servers, allowed = build_gitlab_server(gitlab, repos[0])
         s2, a2 = build_sentry_server(sentry)
         if s2:
             servers.update(s2)
             allowed = list(allowed) + a2
+    if not servers:
+        raise ValidationError(
+            "анализ недоступен: инструменты LLM выключены (ENABLE_LLM_TOOLS) "
+            "или Sentry API не настроен")
 
-    w = search["window"]
-    window_h = (f"last {w['stats_period']}" if "stats_period" in w
-                else f"{w['start']} .. {w['end']} UTC")
-    idents = "; ".join(f"{s['id_type']}={s['value']}"
-                       + (f" (matched field {s['matched_field']})" if s["matched_field"] else "")
-                       for s in search["searches"])
-    tools_note = TOOLS_NOTE.format(
-        repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
-        ref=GITLAB_REF, turns=AGENT_MAX_TURNS) if servers else ""
-    log_lines = [fmt_log_line(row, msg_limit=300, stack_limit=400) for row in logs]
+    window_h = (f"last {window['stats_period']}" if "stats_period" in window
+                else f"{window['start']} .. {window['end']} UTC")
     prompt = EXPLAIN_PROMPT.format(
-        description=search["description"], idents=idents, window=window_h,
-        env=search["environment"] or "all",
-        events=("\n".join(lines) or "—"), logs=("\n".join(log_lines) or "—"),
-        details=("\n---\n".join(details) or "—"), tools=tools_note)
-    return await llm.complete(prompt, mcp_servers=servers or None,
-                              allowed_tools=allowed or None, on_event=on_event)
+        description=description,
+        idents="; ".join(f"{k}={v}" for k, v in idents),
+        window=window_h,
+        env=(environment or "").strip() or "all",
+        repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
+        ref=GITLAB_REF, turns=AGENT_MAX_TURNS)
+    return await llm.complete(prompt, mcp_servers=servers,
+                              allowed_tools=allowed, on_event=on_event)
