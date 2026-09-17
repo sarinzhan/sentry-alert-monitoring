@@ -147,6 +147,34 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # web investigation history: every /api/explain run — the form fields,
+        # the final answer, token usage and the llm_call audit id. Shown in the
+        # web UI («История»).
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS web_request (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                at          REAL NOT NULL,
+                description TEXT,
+                request_id  TEXT,
+                device_id   TEXT,
+                msisdn      TEXT,
+                period      TEXT,
+                date_from   TEXT,
+                date_to     TEXT,
+                environment TEXT,
+                llm_id      TEXT,
+                response    TEXT,
+                in_tokens   INTEGER,
+                out_tokens  INTEGER,
+                cost_usd    REAL,
+                duration_ms INTEGER,
+                error       TEXT
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_web_request_at ON web_request(at)")
+
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(
             "CREATE TABLE IF NOT EXISTS chat_subscription ("

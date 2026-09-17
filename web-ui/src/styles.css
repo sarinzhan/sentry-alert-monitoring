@@ -65,6 +65,11 @@ button:disabled { background: #333846; cursor: default; }
 .step.status-step { color: #a8adbb; }
 .blink { animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
+.tokens { margin-top: 8px; text-align: right; }
+.hist-row { cursor: pointer; }
+.hist-row:hover td { background: #1c1f26; }
+.hist-detail { background: #1a1d24; }
+.hist-detail .msg { white-space: pre-wrap; word-break: break-word; margin: 4px 0 12px; }
 .summary { color: #a8adbb; font-size: 13px; margin-bottom: 12px; }
 .summary code, .results code { color: #d0d4de; }
 h2 { font-size: 16px; margin: 20px 0 8px; }

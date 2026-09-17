@@ -31,6 +31,7 @@ from app.repositories.usermap import UserMapRepo
 from app.repositories.context import ContextRepo
 from app.repositories.llm_audit import LlmAuditRepo
 from app.repositories.projects import ProjectsRepo
+from app.repositories.web_requests import WebRequestsRepo
 from app.services.sentry_api import SentryApiClient
 from app.services.gitlab import GitLabClient
 from app.services.llm import LlmClient
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
     # seeds from SENTRY_PROJECTS/GITLAB_PROJECTS env, then the DB is the source
     # of truth for the id -> name/gitlab maps (edited in the web UI)
     projects = ProjectsRepo(db.conn)
+    web_requests = WebRequestsRepo(db.conn)
 
     # --- external services ---
     sentry_api = SentryApiClient()
@@ -89,6 +91,7 @@ async def lifespan(app: FastAPI):
     app.state.llm_audit = llm_audit
     app.state.sentry = sentry_api
     app.state.projects = projects
+    app.state.web_requests = web_requests
     app.state.services = (sentry_api, gitlab, llm)
 
     await bot.start(polling=TELEGRAM_POLLING)
@@ -183,11 +186,15 @@ async def explain_endpoint(request: Request):
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     if rec is None or not rec.text:
+        request.app.state.web_requests.add(body, error="LLM call failed")
         return JSONResponse({"error": "Не получилось получить ответ от LLM — "
                                       "смотрите логи sentry-telegram."},
                             status_code=502)
     llm_id = request.app.state.llm_audit.put("web-explain", rec)
-    return {"explanation": rec.text, "llm_id": llm_id}
+    request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id)
+    return {"explanation": rec.text, "llm_id": llm_id,
+            "in_tokens": rec.in_tokens, "out_tokens": rec.out_tokens,
+            "cost": rec.cost}
 
 
 def _sse(ev):
@@ -244,22 +251,32 @@ async def explain_stream(request: Request):
             try:
                 rec = task.result()
             except Exception as e:
+                request.app.state.web_requests.add(body, error=str(e)[:300])
                 yield _sse({"type": "error", "error": str(e)[:300]})
                 return
             if rec is None or not rec.text:
+                request.app.state.web_requests.add(body, error="LLM call failed")
                 yield _sse({"type": "error",
                             "error": "Не получилось получить ответ от LLM — "
                                      "смотрите логи sentry-telegram."})
                 return
             llm_id = llm_audit.put("web-explain", rec)
+            request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id)
             yield _sse({"type": "done", "explanation": rec.text,
-                        "llm_id": llm_id})
+                        "llm_id": llm_id, "in_tokens": rec.in_tokens,
+                        "out_tokens": rec.out_tokens, "cost": rec.cost})
         finally:
             task.cancel()                      # client gone -> stop the LLM run
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/history")
+async def history_list(request: Request, limit: int = 100):
+    """History of web analysis runs: form fields, answer, tokens, llm id."""
+    return {"requests": request.app.state.web_requests.list(limit)}
 
 
 @app.get("/api/projects")
@@ -366,6 +383,7 @@ if _WEB_DIR.is_dir():
                       methods=["POST"])
     app.add_api_route("/admin-web/api/explain/stream", explain_stream,
                       methods=["POST"])
+    app.add_api_route("/admin-web/api/history", history_list, methods=["GET"])
     app.add_api_route("/admin-web/api/projects", projects_list, methods=["GET"])
     app.add_api_route("/admin-web/api/projects/{pid}", projects_update,
                       methods=["PUT"])

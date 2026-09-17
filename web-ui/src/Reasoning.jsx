@@ -24,8 +24,13 @@ function Step({ step }) {
   return null
 }
 
-export default function Reasoning({ steps, running }) {
+export default function Reasoning({ steps, running, usage }) {
   if (!steps.length) return null
+  const tokens = usage && (
+    <div className="hint tokens">
+      токены: {usage.in_tokens.toLocaleString('ru')} вх · {usage.out_tokens.toLocaleString('ru')} исх
+    </div>
+  )
   const body = (
     <div className="steps">
       {steps.map((s, i) => <Step key={i} step={s} />)}
@@ -33,12 +38,12 @@ export default function Reasoning({ steps, running }) {
     </div>
   )
   if (running) {
-    return <div className="reasoning">{body}</div>
+    return <div className="reasoning">{body}{tokens}</div>
   }
   return (
     <details className="reasoning">
       <summary>Ход рассуждений ({steps.length} шагов)</summary>
-      {body}
+      {body}{tokens}
     </details>
   )
 }

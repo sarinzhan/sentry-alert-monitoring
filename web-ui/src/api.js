@@ -52,6 +52,12 @@ export async function explainStream(body, onEvent) {
   }
 }
 
+export async function getHistory() {
+  const r = await fetch(`${BASE}api/history`)
+  if (!r.ok) throw new Error(`history: ${r.status}`)
+  return (await r.json()).requests
+}
+
 export async function getProjects() {
   const r = await fetch(`${BASE}api/projects`)
   if (!r.ok) throw new Error(`projects: ${r.status}`)

@@ -155,6 +155,7 @@ class LlmClient:
                       tools_offered=list(allowed_tools or []))
         started = time.monotonic()
         calls_by_id = {}                          # tool_use id -> its trace entry
+        run_in = run_out = 0                      # cumulative usage for live events
         try:
             async with self._sem:
                 async for message in query(prompt=prompt, options=options):
@@ -170,6 +171,15 @@ class LlmClient:
                             elif isinstance(block, TextBlock) and (block.text or "").strip():
                                 _emit(on_event, {"type": "text",
                                                  "text": block.text.strip()})
+                        # per-message usage (when the SDK exposes it) -> live
+                        # cumulative token counter for streaming UIs
+                        usage = getattr(message, "usage", None)
+                        if isinstance(usage, dict) and on_event is not None:
+                            run_in += usage.get("input_tokens", 0) or 0
+                            run_out += usage.get("output_tokens", 0) or 0
+                            _emit(on_event, {"type": "usage",
+                                             "in_tokens": run_in,
+                                             "out_tokens": run_out})
                     elif isinstance(message, UserMessage):
                         content = message.content
                         for block in content if isinstance(content, list) else []:

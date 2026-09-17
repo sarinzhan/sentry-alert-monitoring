@@ -2,6 +2,7 @@ import { useState } from 'react'
 import InvestigateForm from './InvestigateForm.jsx'
 import Results from './Results.jsx'
 import ProjectsPanel from './ProjectsPanel.jsx'
+import HistoryPanel from './HistoryPanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import { investigate, explainStream } from './api.js'
 
@@ -15,6 +16,7 @@ export default function App() {
   const [explaining, setExplaining] = useState(false)
   const [explainError, setExplainError] = useState('')
   const [steps, setSteps] = useState([])
+  const [usage, setUsage] = useState(null)
 
   async function onSubmit(body) {
     setBusy(true)
@@ -23,6 +25,7 @@ export default function App() {
     setExplanation(null)
     setExplainError('')
     setSteps([])
+    setUsage(null)
     setLastBody(body)
     try {
       setResult(await investigate(body))
@@ -38,10 +41,14 @@ export default function App() {
     setExplaining(true)
     setExplainError('')
     setSteps([])
+    setUsage(null)
     try {
       await explainStream(lastBody, (ev) => {
-        if (ev.type === 'done') setExplanation(ev)
-        else if (ev.type === 'error') setExplainError(ev.error)
+        if (ev.type === 'done') {
+          setExplanation(ev)
+          if (ev.in_tokens != null) setUsage({ in_tokens: ev.in_tokens, out_tokens: ev.out_tokens })
+        } else if (ev.type === 'error') setExplainError(ev.error)
+        else if (ev.type === 'usage') setUsage(ev)
         else setSteps((s) => [...s, ev])
       })
     } catch (e) {
@@ -59,11 +66,19 @@ export default function App() {
                 onClick={() => setView('search')}>Расследование</button>
         <button className={view === 'projects' ? 'tab active' : 'tab'}
                 onClick={() => setView('projects')}>Проекты</button>
+        <button className={view === 'history' ? 'tab active' : 'tab'}
+                onClick={() => setView('history')}>История</button>
       </nav>
       {view === 'projects' && (
         <>
           <h1>Проекты</h1>
           <ProjectsPanel />
+        </>
+      )}
+      {view === 'history' && (
+        <>
+          <h1>История анализов</h1>
+          <HistoryPanel />
         </>
       )}
       {view === 'search' && (
@@ -81,12 +96,17 @@ export default function App() {
               <span className="error">{explainError}</span>
             </div>
           )}
-          <Reasoning steps={steps} running={explaining} />
+          <Reasoning steps={steps} running={explaining} usage={usage} />
           {explanation && (
             <div className="explanation">
               <h2>Объяснение</h2>
               <div className="explanation-text">{explanation.explanation}</div>
-              <div className="hint">анализ ИИ — проверьте выводы · {explanation.llm_id}</div>
+              <div className="hint">
+                анализ ИИ — проверьте выводы · {explanation.llm_id}
+                {explanation.in_tokens != null &&
+                  ` · токены: ${explanation.in_tokens.toLocaleString('ru')} вх / ${explanation.out_tokens.toLocaleString('ru')} исх`}
+                {explanation.cost != null && ` · $${explanation.cost.toFixed(4)}`}
+              </div>
             </div>
           )}
           <Results data={result} />
