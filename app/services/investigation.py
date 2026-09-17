@@ -15,7 +15,7 @@ import datetime
 from app.config import (
     SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS, SENTRY_DEVICE_ID_FIELDS,
     SENTRY_LOGS_DATASET, TZ_OFFSET_HOURS,
-    GITLAB_PROJECTS, GITLAB_REF, ENABLE_LLM_TOOLS, log,
+    GITLAB_PROJECTS, GITLAB_REF, ENABLE_LLM_TOOLS, AGENT_MAX_TURNS, log,
 )
 
 PERIODS = ("1h", "24h", "3d", "7d", "14d", "30d")
@@ -152,7 +152,12 @@ TOOLS_NOTE = (
     "({repos}, ref {ref}); Sentry event_details(project, event_id), "
     "related_errors(trace_id), user_events(msisdn, …) and search_logs "
     "(full-text over application logs). Read the code path that threw "
-    "before deciding.\n\n"
+    "before deciding.\n"
+    "IMPORTANT: you have a hard budget of {turns} turns and MUST deliver the "
+    "final answer within it. Spend at most half the budget on tool calls; if "
+    "a tool errors twice (e.g. GitLab auth), stop using it. When the budget "
+    "runs low, stop investigating and answer with the best conclusion from "
+    "what you already have — a partial answer beats no answer.\n\n"
 )
 
 
@@ -200,7 +205,7 @@ async def explain(sentry, gitlab, llm, *, search):
                        for s in search["searches"])
     tools_note = TOOLS_NOTE.format(
         repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
-        ref=GITLAB_REF) if servers else ""
+        ref=GITLAB_REF, turns=AGENT_MAX_TURNS) if servers else ""
     log_lines = [fmt_log_line(row, msg_limit=300, stack_limit=400) for row in logs]
     prompt = EXPLAIN_PROMPT.format(
         description=search["description"], idents=idents, window=window_h,

@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import InvestigateForm from './InvestigateForm.jsx'
 import Results from './Results.jsx'
+import ProjectsPanel from './ProjectsPanel.jsx'
 import { investigate, explain } from './api.js'
 
 export default function App() {
+  const [view, setView] = useState('search')
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -45,6 +47,20 @@ export default function App() {
 
   return (
     <main>
+      <nav className="tabs">
+        <button className={view === 'search' ? 'tab active' : 'tab'}
+                onClick={() => setView('search')}>Расследование</button>
+        <button className={view === 'projects' ? 'tab active' : 'tab'}
+                onClick={() => setView('projects')}>Проекты</button>
+      </nav>
+      {view === 'projects' && (
+        <>
+          <h1>Проекты</h1>
+          <ProjectsPanel />
+        </>
+      )}
+      {view === 'search' && (
+        <>
       <h1>Расследование проблемы</h1>
       <p className="sub">Поиск ошибок и логов в Sentry по запросу, устройству или абоненту.</p>
       <InvestigateForm onSubmit={onSubmit} busy={busy} serverError={error} />
@@ -66,6 +82,8 @@ export default function App() {
             </div>
           )}
           <Results data={result} />
+        </>
+      )}
         </>
       )}
     </main>

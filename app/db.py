@@ -131,6 +131,16 @@ class Database:
             " query TEXT PRIMARY KEY, doc TEXT NOT NULL, llm_id TEXT, at REAL NOT NULL)"
         )
 
+        # project catalog: sentry project id -> display name + gitlab repo.
+        # Seeded from SENTRY_PROJECTS / GITLAB_PROJECTS env on startup, then the
+        # DB is the source of truth (edited in the web UI); unknown projects
+        # seen in webhooks/API get auto-registered with empty fields.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS project ("
+            " id TEXT PRIMARY KEY, name TEXT, gitlab_repo TEXT,"
+            " first_seen REAL NOT NULL, updated REAL NOT NULL)"
+        )
+
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(
             "CREATE TABLE IF NOT EXISTS chat_subscription ("

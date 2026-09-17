@@ -162,6 +162,14 @@ The environment select is populated from `WEB_ENVIRONMENTS` (default
 `prod,stage`; values must match Sentry environment names) and overrides the
 global `SENTRY_ENVIRONMENTS` for that query. Backend: `POST /api/investigate`.
 
+The **«Проекты»** tab manages the project catalog (the `project` DB table):
+sentry project id → display name + GitLab repo link. `SENTRY_PROJECTS` /
+`GITLAB_PROJECTS` env vars only seed it on first start; afterwards the DB
+wins, edits apply immediately (no restart), and projects the bot has never
+seen auto-register with empty fields as their first events arrive — attach
+the GitLab link there to give the LLM code access for that service. Backend:
+`GET /api/projects`, `PUT /api/projects/{id}`.
+
 When the search finds something, an **«Объяснить простыми словами»** button
 asks the agentic LLM (same GitLab + Sentry tools as `/why`) for a verdict
 written for tech-support staff: what happened, why (business rule vs code

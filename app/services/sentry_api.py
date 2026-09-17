@@ -41,6 +41,9 @@ class SentryApiClient:
     def __init__(self):
         self._cache: dict[str, str] = {}
         self._fetched = 0.0
+        # ProjectsRepo, attached by the composition root: every project id/name
+        # this client learns about gets auto-registered in the catalog
+        self.projects = None
         self._log_attrs: list[str] = []
         self._attrs_fetched = 0.0
         self._lock = asyncio.Lock()
@@ -66,13 +69,15 @@ class SentryApiClient:
         s = str(project)
         if not s.isdigit():
             return s                       # already a slug/name (issue payloads)
-        if s in PROJECT_NAMES:             # static override, no network needed
+        if s in PROJECT_NAMES:             # catalog/env override, no network needed
             return PROJECT_NAMES[s]
         if self._api is not None:
             if s not in self._cache:
                 await self._refresh()
             if s in self._cache:
                 return self._cache[s]
+        if self.projects is not None:      # unknown id: register it for the web UI
+            self.projects.ensure(s)
         return s                           # fallback: show the numeric id (mappable)
 
     async def _refresh(self):
@@ -89,6 +94,9 @@ class SentryApiClient:
                 r.raise_for_status()
                 for proj in r.json():
                     self._cache[str(proj["id"])] = proj.get("slug") or proj.get("name")
+                    if self.projects is not None:
+                        self.projects.ensure(str(proj["id"]),
+                                             proj.get("slug") or proj.get("name"))
                 log.info("project cache refreshed: %d projects", len(self._cache))
             except httpx.HTTPStatusError as e:
                 # surface the real reason (e.g. 403 = token missing project:read)

@@ -21,3 +21,20 @@ async function post(path, body) {
 
 export const investigate = (body) => post('investigate', body)
 export const explain = (body) => post('explain', body)
+
+export async function getProjects() {
+  const r = await fetch(`${BASE}api/projects`)
+  if (!r.ok) throw new Error(`projects: ${r.status}`)
+  return (await r.json()).projects
+}
+
+export async function saveProject(id, body) {
+  const r = await fetch(`${BASE}api/projects/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) throw new Error(data.error || `Ошибка ${r.status}`)
+  return data
+}

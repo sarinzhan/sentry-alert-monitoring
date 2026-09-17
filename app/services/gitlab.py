@@ -17,7 +17,9 @@ class GitLabClient:
     def __init__(self):
         self._path_cache: dict[str, str] = {}   # (repo, module) -> resolved repo path
         self._client = None
-        if GITLAB_URL and GITLAB_TOKEN and GITLAB_PROJECTS:
+        # no GITLAB_PROJECTS check here: the repo map is DB-backed now and can
+        # be filled from the web UI at runtime — `enabled` checks it live
+        if GITLAB_URL and GITLAB_TOKEN:
             self._client = httpx.AsyncClient(
                 base_url=GITLAB_URL,
                 trust_env=False,
@@ -27,7 +29,7 @@ class GitLabClient:
 
     @property
     def enabled(self):
-        return self._client is not None
+        return self._client is not None and bool(GITLAB_PROJECTS)
 
     async def aclose(self):
         if self._client is not None:
@@ -85,6 +87,10 @@ class GitLabClient:
                 pr = await self._client.get(f"/api/v4/projects/{proj_enc}")
             except Exception as e:
                 log.warning("gitlab project error repo=%s: %s", repo, e)
+                return None
+            if pr.status_code in (401, 403):
+                log.warning("gitlab AUTH failed repo=%s (%s) — GITLAB_TOKEN is invalid, "
+                            "expired or lacks the read_api scope", repo, pr.status_code)
                 return None
             if pr.status_code != 200:
                 log.warning("gitlab project NOT FOUND repo=%s (%s) — GITLAB_PROJECTS needs a "

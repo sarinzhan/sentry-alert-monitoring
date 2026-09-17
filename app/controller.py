@@ -29,6 +29,7 @@ from app.repositories.keywords import KeywordsRepo
 from app.repositories.usermap import UserMapRepo
 from app.repositories.context import ContextRepo
 from app.repositories.llm_audit import LlmAuditRepo
+from app.repositories.projects import ProjectsRepo
 from app.services.sentry_api import SentryApiClient
 from app.services.gitlab import GitLabClient
 from app.services.llm import LlmClient
@@ -54,9 +55,13 @@ async def lifespan(app: FastAPI):
     usermap = UserMapRepo(db.conn)
     context = ContextRepo(db.conn)
     llm_audit = LlmAuditRepo(db.conn)
+    # seeds from SENTRY_PROJECTS/GITLAB_PROJECTS env, then the DB is the source
+    # of truth for the id -> name/gitlab maps (edited in the web UI)
+    projects = ProjectsRepo(db.conn)
 
     # --- external services ---
     sentry_api = SentryApiClient()
+    sentry_api.projects = projects        # auto-register projects it discovers
     gitlab = GitLabClient()
     llm = LlmClient()
 
@@ -82,6 +87,7 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     app.state.llm_audit = llm_audit
     app.state.sentry = sentry_api
+    app.state.projects = projects
     app.state.services = (sentry_api, gitlab, llm)
 
     await bot.start(polling=TELEGRAM_POLLING)
@@ -191,6 +197,29 @@ async def explain_endpoint(request: Request):
     return {"explanation": rec.text, "llm_id": llm_id}
 
 
+@app.get("/api/projects")
+async def projects_list(request: Request):
+    """The project catalog: sentry project id -> display name + gitlab repo.
+    Unknown projects appear here automatically as events arrive."""
+    return {"projects": request.app.state.projects.all()}
+
+
+@app.put("/api/projects/{pid}")
+async def projects_update(pid: str, request: Request):
+    """Edit one project: {name?, gitlab_repo?} — omitted field is untouched,
+    empty string clears it. gitlab_repo is a full namespace path
+    (e.g. mobile/billing) or a numeric GitLab project id."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    row = request.app.state.projects.set(
+        pid, name=body.get("name"), gitlab_repo=body.get("gitlab_repo"))
+    if row is None:
+        return JSONResponse({"error": f"проект {pid} не найден"}, status_code=404)
+    return row
+
+
 @app.get("/api/llm/{llm_id}")
 async def llm_call(llm_id: str, request: Request):
     """Full record of one LLM call (prompt, tool trace, tokens, response) by the
@@ -270,6 +299,9 @@ if _WEB_DIR.is_dir():
                       methods=["POST"])
     app.add_api_route("/admin-web/api/explain", explain_endpoint,
                       methods=["POST"])
+    app.add_api_route("/admin-web/api/projects", projects_list, methods=["GET"])
+    app.add_api_route("/admin-web/api/projects/{pid}", projects_update,
+                      methods=["PUT"])
     app.mount("/admin-web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
 
     @app.get("/")
