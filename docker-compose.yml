@@ -26,8 +26,10 @@ services:
         aliases:
           - sentry-telegram.local
 
-  # Investigation web UI (React) — nginx serves the static build and proxies
-  # /api to sentry-telegram over the shared network: http://host:8081/web/
+  # Investigation web UI (React) — nginx serves the static build and forwards
+  # its api calls to sentry-telegram over the shared network. Everything lives
+  # under /admin-web/ (http://host:8081/admin-web/), so the host nginx can
+  # expose it as superapp-sentry.beeline.kg/admin-web/ with one location block.
   sentry-web:
     build:
       context: /opt/docker/sentry-alert-monitoring/web-ui

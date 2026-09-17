@@ -97,21 +97,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# The investigation UI normally runs as its own container (sentry-web: nginx
-# serving the React build, proxying /api here). For an all-in-one run without
-# nginx, `cd web-ui && npm run build` drops the build into app/web/ and this
-# app serves it itself.
-_WEB_DIR = Path(__file__).resolve().parent / "web"
-if _WEB_DIR.is_dir():
-    app.mount("/web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
-
-    @app.get("/")
-    async def index():
-        return RedirectResponse("/web/")
-else:
-    log.info("web UI not mounted (app/web absent) — it runs as the sentry-web container")
-
-
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -218,3 +203,24 @@ async def webhook(request: Request):
     # respond right away; do Telegram/LLM work in the background
     asyncio.create_task(request.app.state.pipeline.process(resource, payload))
     return Response(status_code=200)
+
+
+# The investigation UI normally runs as its own container (sentry-web: nginx
+# serving the React build at /admin-web/, forwarding its /admin-web/api/*
+# calls to /api/* here). For an all-in-one run without nginx,
+# `cd web-ui && npm run build` drops the build into app/web/ and this app
+# serves it itself: the UI keeps calling /admin-web/api/*, so those two paths
+# are aliased BEFORE the static mount (route order decides — the mount would
+# otherwise swallow them).
+_WEB_DIR = Path(__file__).resolve().parent / "web"
+if _WEB_DIR.is_dir():
+    app.add_api_route("/admin-web/api/meta", meta, methods=["GET"])
+    app.add_api_route("/admin-web/api/investigate", investigate_endpoint,
+                      methods=["POST"])
+    app.mount("/admin-web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
+    @app.get("/")
+    async def index():
+        return RedirectResponse("/admin-web/")
+else:
+    log.info("web UI not mounted (app/web absent) — it runs as the sentry-web container")

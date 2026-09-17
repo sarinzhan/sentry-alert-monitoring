@@ -147,8 +147,8 @@ services tag events:
 
 ## Web UI (investigation form)
 
-`GET /web/` serves a React form — the web analog of `/req` + `/why` (first
-iteration: search only, no LLM verdict). Fields: approximate local time,
+A React form — the web analog of `/req` + `/why` (first iteration: search
+only, no LLM verdict). Fields: approximate local time,
 msisdn, request id, device id, environment (stage/prod), problem description.
 Description plus at least one identifier (request id / device id / msisdn) are
 required. Every provided identifier is searched over its configured key list
@@ -162,14 +162,26 @@ global `SENTRY_ENVIRONMENTS` for that query. Backend: `POST /api/investigate`.
 
 The UI lives in `web-ui/` (React + Vite) and runs as its own container:
 `web-ui/Dockerfile` builds the React app in a Node stage, then nginx serves
-the static files and proxies `/api` to `sentry-telegram` over the shared
-docker network. In compose it's the `sentry-web` service on port **8081**
-(`http://host:8081/web/`); `docker compose build` needs no npm on the host.
+the static files and forwards the api calls to `sentry-telegram` over the
+shared docker network. In compose it's the `sentry-web` service on port
+**8081**; `docker compose build` needs no npm on the host.
+
+Everything (assets and api calls) lives under the **`/admin-web/`** prefix
+(`http://host:8081/admin-web/`), so the host nginx can expose it on an
+existing domain with a single block — no collision with Sentry's own routes:
+
+    location /admin-web/ {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
 
 Without Docker, the FastAPI app can serve the UI itself: build it once
 (`cd web-ui && npm install && npm run build` — lands in `app/web/`) and open
-`http://localhost:8080/web/`. Dev mode: `npm run dev` proxies `/api` to
-`localhost:8080`.
+`http://localhost:8080/admin-web/`. Dev mode: `npm run dev` proxies the api
+to `localhost:8080`.
 
 ## LLM audit trail
 

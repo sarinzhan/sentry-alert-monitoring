@@ -15,4 +15,4 @@ RUN npm run build -- --outDir dist --emptyOutDir
 FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /ui/dist /usr/share/nginx/html/web
+COPY --from=build /ui/dist /usr/share/nginx/html/admin-web

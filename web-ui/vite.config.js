@@ -1,18 +1,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// The build lands in app/web/ so FastAPI serves it at /web/ and the existing
-// `COPY app/ ./app/` in the Dockerfile picks it up — build the UI first.
+// Everything lives under /admin-web/ so the UI can hang off an existing
+// domain (superapp-sentry.beeline.kg/admin-web/) without colliding with
+// Sentry's own routes (/api/ especially). The bot's API stays at /api/ —
+// the nginx in the sentry-web container strips the prefix.
 export default defineConfig({
   plugins: [react()],
-  base: '/web/',
+  base: '/admin-web/',
   build: {
     outDir: '../app/web',
     emptyOutDir: true,
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
+      '/admin-web/api': {
+        target: 'http://localhost:8080',
+        rewrite: (path) => path.replace(/^\/admin-web/, ''),
+      },
     },
   },
 })
