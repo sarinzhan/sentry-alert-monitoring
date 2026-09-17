@@ -4,17 +4,21 @@ The lifespan builds the whole object graph (Database → repositories → servic
 pipeline → bot), injects the command dependencies, and starts the bot.
 
 Endpoints:
-  GET  /health    liveness check
-  POST /webhook   Sentry webhook   -> EventPipeline
-  POST /telegram  Telegram webhook -> ChatBotHandler (alternative to polling)
+  GET  /health           liveness check
+  POST /webhook          Sentry webhook   -> EventPipeline
+  POST /telegram         Telegram webhook -> ChatBotHandler (alternative to polling)
+  GET  /web/             investigation form (static page)
+  POST /api/investigate  form backend -> Sentry search
 """
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.config import BOT_TOKEN, TELEGRAM_POLLING, log
+from app.config import BOT_TOKEN, TELEGRAM_POLLING, TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, log
 from app.summaries import banner
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -93,10 +97,62 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# The investigation UI normally runs as its own container (sentry-web: nginx
+# serving the React build, proxying /api here). For an all-in-one run without
+# nginx, `cd web-ui && npm run build` drops the build into app/web/ and this
+# app serves it itself.
+_WEB_DIR = Path(__file__).resolve().parent / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
+    @app.get("/")
+    async def index():
+        return RedirectResponse("/web/")
+else:
+    log.info("web UI not mounted (app/web absent) — it runs as the sentry-web container")
+
 
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/api/meta")
+async def meta():
+    """Static config the web form needs (environment choices, timezone)."""
+    return {"environments": WEB_ENVIRONMENTS, "tz_offset_hours": TZ_OFFSET_HOURS}
+
+
+@app.post("/api/investigate")
+async def investigate_endpoint(request: Request):
+    """Investigation form: search Sentry by request_id / device_id / msisdn
+    around an approximate local time, optionally narrowed to one environment.
+    Body: {description, request_id?, device_id?, msisdn?, when_local?,
+    environment?} — description and at least one identifier are required."""
+    from app.services.investigation import investigate, ValidationError
+    from app.services.sentry_api import discover_error_hint
+    sentry = request.app.state.sentry
+    if not sentry.enabled:
+        return JSONResponse({"error": "Sentry API не настроен (SENTRY_API_TOKEN)."},
+                            status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    try:
+        result = await investigate(
+            sentry,
+            description=body.get("description"),
+            request_id=body.get("request_id"),
+            device_id=body.get("device_id"),
+            msisdn=body.get("msisdn"),
+            when_local=body.get("when_local"),
+            environment=body.get("environment"))
+    except ValidationError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    except Exception as e:
+        return JSONResponse({"error": discover_error_hint(e)}, status_code=502)
+    return result
 
 
 @app.get("/api/llm/{llm_id}")

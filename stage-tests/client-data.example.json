@@ -1,0 +1,21 @@
+{
+  "passportNumber": "ID1234567",
+  "inn": "20101199001234",
+  "surname": "TESTOV",
+  "name": "TEST",
+  "patronymic": "TESTOVICH",
+  "dateBirth": "1990-01-01",
+  "dateExpiry": "2030-01-01",
+  "dateIssue": "2020-01-01",
+  "authority": "MKK 201234",
+  "registrationAddress": "Bishkek, Test st. 1",
+  "accommodation": "Bishkek, Test st. 1",
+  "position": "QA",
+  "workPlace": "Stage Tests",
+  "phone": "996770000000",
+  "usageTarget": "personal",
+  "codeWord": "stage-test",
+  "countryCode": "KG",
+  "nationality": "KG",
+  "gender": "MALE"
+}

@@ -16,6 +16,14 @@ state.db
 *.db-journal
 *.db-wal
 
+# Web UI: runs as its own container (web-ui/Dockerfile) — nothing of it
+# belongs in the app image
+app/web/
+web-ui/
+**/node_modules
+testops-ui/
+stage-tests/
+
 # VCS / editor / OS cruft
 .git/
 .gitignore

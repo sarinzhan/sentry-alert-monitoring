@@ -1,0 +1,6 @@
+.env
+testops.db
+run-*.json
+.pytest_cache/
+__pycache__/
+client-data.json

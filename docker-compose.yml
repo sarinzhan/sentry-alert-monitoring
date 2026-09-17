@@ -26,6 +26,25 @@ services:
         aliases:
           - sentry-telegram.local
 
+  # Investigation web UI (React) — nginx serves the static build and proxies
+  # /api to sentry-telegram over the shared network: http://host:8081/web/
+  sentry-web:
+    build:
+      context: /opt/docker/sentry-alert-monitoring/web-ui
+      # same build-time proxy, for `npm ci`
+      args:
+        HTTP_PROXY: "http://10.16.195.94:8080"
+        HTTPS_PROXY: "http://10.16.195.94:8080"
+        NO_PROXY: "localhost,127.0.0.1"
+    container_name: sentry-web
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    depends_on:
+      - sentry-telegram
+    networks:
+      - sentry-self-hosted_default
+
 volumes:
   sentry_telegram_state:
 

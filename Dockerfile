@@ -17,7 +17,8 @@ RUN pip install --no-cache-dir \
         --trusted-host pypi.python.org \
         -r requirements.txt
 
-# then the app: entry point + the app/ package
+# then the app: entry point + the app/ package. The web UI is NOT baked in —
+# it runs as its own container (web-ui/Dockerfile, `sentry-web` in compose).
 COPY main.py ./
 COPY app/ ./app/
 

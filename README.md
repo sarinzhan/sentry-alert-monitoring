@@ -145,6 +145,32 @@ services tag events:
   when no single endpoint matches it lists the closest candidates instead.
   Cached per query; `/api refresh <path>` regenerates.
 
+## Web UI (investigation form)
+
+`GET /web/` serves a React form — the web analog of `/req` + `/why` (first
+iteration: search only, no LLM verdict). Fields: approximate local time,
+msisdn, request id, device id, environment (stage/prod), problem description.
+Description plus at least one identifier (request id / device id / msisdn) are
+required. Every provided identifier is searched over its configured key list
+(`SENTRY_REQUEST_ID_FIELDS`, `SENTRY_DEVICE_ID_FIELDS` — default
+`deviceId,device_id` — and `SENTRY_MSISDN_FIELDS`), events are merged; an
+msisdn also pulls the application log lines of the same window. With a time
+given the search runs ±45 min (auto-widens to ±3 h), otherwise the last 24 h.
+The environment select is populated from `WEB_ENVIRONMENTS` (default
+`prod,stage`; values must match Sentry environment names) and overrides the
+global `SENTRY_ENVIRONMENTS` for that query. Backend: `POST /api/investigate`.
+
+The UI lives in `web-ui/` (React + Vite) and runs as its own container:
+`web-ui/Dockerfile` builds the React app in a Node stage, then nginx serves
+the static files and proxies `/api` to `sentry-telegram` over the shared
+docker network. In compose it's the `sentry-web` service on port **8081**
+(`http://host:8081/web/`); `docker compose build` needs no npm on the host.
+
+Without Docker, the FastAPI app can serve the UI itself: build it once
+(`cd web-ui && npm install && npm run build` — lands in `app/web/`) and open
+`http://localhost:8080/web/`. Dev mode: `npm run dev` proxies `/api` to
+`localhost:8080`.
+
 ## LLM audit trail
 
 Every LLM call is persisted in full (prompt, tools offered, each tool

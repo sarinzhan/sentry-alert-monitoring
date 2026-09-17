@@ -1,0 +1,105 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0f1117;
+  color: #e2e5ec;
+}
+
+.app { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 24px;
+}
+h1 { font-size: 22px; margin: 0; }
+h2 { font-size: 17px; margin: 0 0 4px; }
+h3 { font-size: 14px; margin: 0; }
+
+.toolbar { display: flex; gap: 8px; }
+
+button {
+  background: #1d2230; color: #e2e5ec; border: 1px solid #2e3547;
+  border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px;
+}
+button:hover:not(:disabled) { background: #262d40; }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: #2b5cd9; border-color: #2b5cd9; }
+button.primary:hover:not(:disabled) { background: #3568e8; }
+button.ghost { background: none; border: none; padding: 2px 6px; }
+
+.error {
+  background: #3a1520; border: 1px solid #7a2b3d; color: #ff9aa8;
+  padding: 10px 14px; border-radius: 6px; margin-bottom: 16px;
+  white-space: pre-wrap; font-size: 13px;
+}
+
+.flow { margin-bottom: 32px; }
+.flow-head p { color: #9aa3b5; font-size: 13px; margin: 0 0 12px; max-width: 900px; }
+
+.steps { display: flex; align-items: flex-start; gap: 6px; overflow-x: auto; padding-bottom: 8px; }
+.arrow { align-self: center; color: #4a5670; font-size: 20px; flex-shrink: 0; }
+
+.step-card {
+  background: #171b26; border: 1px solid #262d40; border-radius: 10px;
+  padding: 14px; min-width: 250px; max-width: 300px; flex-shrink: 0;
+}
+.step-title { display: flex; justify-content: space-between; align-items: center; }
+.step-desc { color: #9aa3b5; font-size: 12px; line-height: 1.45; margin: 6px 0 8px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.chip {
+  background: #20283c; border: 1px solid #303b57; color: #8fa3cf;
+  font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  font-family: Consolas, monospace;
+}
+
+.step-edit { display: flex; flex-direction: column; gap: 8px; }
+.step-edit input, .step-edit textarea {
+  background: #0f1117; color: #e2e5ec; border: 1px solid #2e3547;
+  border-radius: 6px; padding: 7px; font-size: 13px; font-family: inherit;
+}
+.edit-actions { display: flex; gap: 8px; }
+
+.tests { border-top: 1px solid #262d40; padding-top: 8px; margin-top: 4px; }
+.no-tests { color: #545e73; font-size: 12px; font-style: italic; }
+
+.test-item { border-radius: 6px; padding: 3px 4px; }
+.test-item.passed { background: rgba(46, 160, 67, 0.08); }
+.test-item.failed, .test-item.error { background: rgba(248, 81, 73, 0.08); }
+.test-row { display: flex; align-items: center; gap: 6px; }
+.test-name {
+  background: none; border: none; padding: 2px 0; text-align: left;
+  color: #c8cfdd; font-size: 12px; flex: 1; overflow-wrap: anywhere;
+}
+.test-name:hover { color: #fff; text-decoration: underline; }
+
+.badge.destructive {
+  background: #3a2410; border: 1px solid #7a4a1d; color: #ffb26b;
+  font-size: 9px; padding: 1px 6px; border-radius: 8px; text-transform: uppercase;
+}
+.outcome { font-size: 11px; white-space: nowrap; color: #9aa3b5; }
+
+.test-detail { padding: 4px 8px 8px 26px; }
+.doc { color: #9aa3b5; font-size: 12px; line-height: 1.5; margin: 4px 0; }
+.needs { color: #b89a5e; font-size: 11px; margin: 4px 0; padding-left: 16px; }
+.failure {
+  background: #1a0f14; border: 1px solid #4a2430; color: #ff9aa8;
+  font-size: 11px; padding: 8px; border-radius: 6px;
+  overflow-x: auto; white-space: pre-wrap; max-height: 260px;
+}
+
+.plain-tests { color: #9aa3b5; font-size: 12px; font-family: Consolas, monospace; }
+
+.runs-panel {
+  position: sticky; bottom: 0;
+  background: #171b26; border: 1px solid #262d40; border-radius: 10px 10px 0 0;
+  padding: 12px 18px; margin-top: 24px;
+}
+.runs-panel p { margin: 4px 0; font-size: 13px; color: #9aa3b5; }
+.status { font-size: 13px; padding: 2px 10px; border-radius: 10px; }
+.status.running { background: #2a2f1d; color: #d8e06b; }
+.status.passed { background: #14291a; color: #56d364; }
+.status.failed, .status.error { background: #2d1418; color: #ff7b72; }
+.summary { font-weight: 600; }

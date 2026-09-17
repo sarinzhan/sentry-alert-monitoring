@@ -1,0 +1,6 @@
+pytest>=8.0
+pytest-json-report>=1.5
+requests>=2.31
+python-dotenv>=1.0
+fastapi>=0.110
+uvicorn>=0.29

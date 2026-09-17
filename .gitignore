@@ -17,6 +17,10 @@ state.db
 *.db-journal
 *.db-wal
 
+# Web UI (web-ui/ builds into app/web/; build before docker build)
+node_modules/
+app/web/
+
 # OS / editor cruft
 .DS_Store
 *.swp

@@ -114,18 +114,22 @@ class SentryApiClient:
         return None
 
     async def discover(self, query: str, stats_period=None, start=None, end=None,
-                       limit: int = 20, fields=DISCOVER_FIELDS, dataset=None):
+                       limit: int = 20, fields=DISCOVER_FIELDS, dataset=None,
+                       environments=None):
         """Events across ALL projects matching a Discover search query
         (self-hosted Sentry ships Discover). Time range: start+end (ISO 8601,
         UTC) or stats_period like '24h'/'7d'. dataset=None queries errors;
         'logs' queries application log lines. Project scope and environments
         come from SENTRY_SEARCH_PROJECTS / SENTRY_ENVIRONMENTS — without an
         explicit project param Sentry silently narrows to the token's "member
-        projects", so -1 (all) is sent by default. Raises on HTTP errors."""
+        projects", so -1 (all) is sent by default. environments overrides the
+        global SENTRY_ENVIRONMENTS for this one query (the web form's
+        stage/prod choice). Raises on HTTP errors."""
         params = [("field", f) for f in fields]
         params += [("query", query), ("sort", "-timestamp"), ("per_page", str(limit))]
         params += [("project", p) for p in SENTRY_SEARCH_PROJECTS]
-        params += [("environment", e) for e in SENTRY_ENVIRONMENTS]
+        envs = SENTRY_ENVIRONMENTS if environments is None else environments
+        params += [("environment", e) for e in envs]
         if dataset:
             params.append(("dataset", dataset))
         if start and end:
@@ -138,7 +142,8 @@ class SentryApiClient:
         return ((r.json() or {}).get("data")) or []
 
     async def search_logs(self, query: str, stats_period=None, start=None,
-                          end=None, limit: int = 100, fields=None):
+                          end=None, limit: int = 100, fields=None,
+                          environments=None):
         """Application log lines (Sentry logs dataset) matching a search query.
         fields extends/replaces the default column set (timestamp, message and
         the service name are always included). [] when the dataset is disabled."""
@@ -151,7 +156,8 @@ class SentryApiClient:
         try:
             return await self.discover(query, stats_period=stats_period,
                                        start=start, end=end, limit=limit,
-                                       fields=cols, dataset=SENTRY_LOGS_DATASET)
+                                       fields=cols, dataset=SENTRY_LOGS_DATASET,
+                                       environments=environments)
         except httpx.HTTPStatusError as e:
             # a 400 usually means one of the optional columns doesn't exist in
             # this org — retry with the minimal set instead of failing the lookup
@@ -162,7 +168,8 @@ class SentryApiClient:
             minimal = ("timestamp", "message", "resource.service.name", "trace")
             return await self.discover(query, stats_period=stats_period,
                                        start=start, end=end, limit=limit,
-                                       fields=minimal, dataset=SENTRY_LOGS_DATASET)
+                                       fields=minimal, dataset=SENTRY_LOGS_DATASET,
+                                       environments=environments)
 
     async def log_attributes(self):
         """All log attribute keys that exist in this org, straight from the API
@@ -192,12 +199,13 @@ class SentryApiClient:
         return self._log_attrs
 
     async def logs_for_user(self, msisdn, stats_period=None, start=None,
-                            end=None, limit: int = 100):
+                            end=None, limit: int = 100, environments=None):
         """One user's log lines — full-text search, since the msisdn appears
         inside the message text (SENTRY_LOGS_MSISDN_QUERY template)."""
         q = SENTRY_LOGS_MSISDN_QUERY.format(value=str(msisdn).strip())
         return await self.search_logs(q, stats_period=stats_period, start=start,
-                                      end=end, limit=limit)
+                                      end=end, limit=limit,
+                                      environments=environments)
 
     async def find_events(self, keys, value, **kw):
         """Try each configured search key (e.g. user.id, then a tag) until one

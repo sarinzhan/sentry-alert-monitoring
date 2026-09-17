@@ -46,6 +46,13 @@ SENTRY_MSISDN_FIELDS = [f.strip() for f in os.environ.get(
 # Where the request id lives: a tag name, or 'trace' for the distributed trace id.
 SENTRY_REQUEST_ID_FIELDS = [f.strip() for f in os.environ.get(
     "SENTRY_REQUEST_ID_FIELDS", "request_id,trace").split(",") if f.strip()]
+# Where the device id lives (web investigation form).
+SENTRY_DEVICE_ID_FIELDS = [f.strip() for f in os.environ.get(
+    "SENTRY_DEVICE_ID_FIELDS", "deviceId,device_id").split(",") if f.strip()]
+# Environment choices offered by the web form (must match Sentry environment
+# names). The form also offers "all environments" regardless of this list.
+WEB_ENVIRONMENTS = [e.strip() for e in os.environ.get(
+    "WEB_ENVIRONMENTS", "prod,stage").split(",") if e.strip()]
 # Times users type in commands (/why) are local; Sentry stores UTC. Default +6 (Bishkek).
 TZ_OFFSET_HOURS = float(os.environ.get("TIMEZONE_OFFSET_HOURS", "6"))
 # Sentry Logs dataset: services ship application log lines to Sentry, so user
