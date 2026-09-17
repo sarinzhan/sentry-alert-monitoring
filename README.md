@@ -232,6 +232,12 @@ docker compose logs -f sentry-telegram    # startup banner shows the effective c
 Secrets come from `.env` next to `docker-compose.yml` (gitignored). The service joins the
 Sentry stack's docker network, reachable as `http://sentry-telegram:8080`.
 
+To update a running server (the deploy dir must be a git clone of this repo):
+
+```bash
+bash deploy.sh    # git pull --ff-only + compose up -d --build + health checks
+```
+
 ### Or directly
 
 ```bash

@@ -1,0 +1,2 @@
+# the deploy script runs on the Linux server — never check it out with CRLF
+*.sh text eol=lf
