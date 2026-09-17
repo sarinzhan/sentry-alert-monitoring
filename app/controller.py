@@ -111,9 +111,11 @@ async def meta():
 @app.post("/api/investigate")
 async def investigate_endpoint(request: Request):
     """Investigation form: search Sentry by request_id / device_id / msisdn
-    around an approximate local time, optionally narrowed to one environment.
-    Body: {description, request_id?, device_id?, msisdn?, when_local?,
-    environment?} — description and at least one identifier are required."""
+    over a period (preset 1h/24h/3d/7d/14d/30d, default 3d, or a custom local
+    date range), optionally narrowed to one environment.
+    Body: {description, request_id?, device_id?, msisdn?, period?, date_from?,
+    date_to?, environment?} — description and at least one identifier are
+    required."""
     from app.services.investigation import investigate, ValidationError
     from app.services.sentry_api import discover_error_hint
     sentry = request.app.state.sentry
@@ -131,7 +133,9 @@ async def investigate_endpoint(request: Request):
             request_id=body.get("request_id"),
             device_id=body.get("device_id"),
             msisdn=body.get("msisdn"),
-            when_local=body.get("when_local"),
+            period=body.get("period"),
+            date_from=body.get("date_from"),
+            date_to=body.get("date_to"),
             environment=body.get("environment"))
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)

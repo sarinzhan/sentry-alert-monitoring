@@ -1,11 +1,23 @@
 import { useEffect, useState } from 'react'
 import { getMeta } from './api.js'
 
+export const PERIODS = [
+  ['1h', 'последний час'],
+  ['24h', 'последние 24 часа'],
+  ['3d', 'последние 3 дня'],
+  ['7d', 'последние 7 дней'],
+  ['14d', 'последние 14 дней'],
+  ['30d', 'последний месяц'],
+  ['custom', 'свои даты'],
+]
+
 const EMPTY = {
   request_id: '',
   device_id: '',
   msisdn: '',
-  when_local: '',
+  period: '3d',
+  date_from: '',
+  date_to: '',
   environment: '',
   description: '',
 }
@@ -21,7 +33,10 @@ export default function InvestigateForm({ onSubmit, busy, serverError }) {
 
   const hasId = ['request_id', 'device_id', 'msisdn'].some((k) => values[k].trim())
   const hasDescription = Boolean(values.description.trim())
-  const valid = hasId && hasDescription
+  const custom = values.period === 'custom'
+  const datesOk = !custom || (values.date_from && values.date_to &&
+    values.date_from <= values.date_to)
+  const valid = hasId && hasDescription && datesOk
 
   function set(name) {
     return (e) => setValues((v) => ({ ...v, [name]: e.target.value }))
@@ -33,14 +48,18 @@ export default function InvestigateForm({ onSubmit, busy, serverError }) {
     if (!valid || busy) return
     const body = {}
     for (const [k, v] of Object.entries(values)) body[k] = v.trim()
+    if (custom) delete body.period
+    else { delete body.date_from; delete body.date_to }
     onSubmit(body)
   }
 
   const idInvalid = touched && !hasId
   const tz = meta.tz_offset_hours
-  const tzHint = tz == null ? '' : ` (местное, UTC${tz >= 0 ? '+' : ''}${tz})`
+  const tzHint = tz == null ? '' : ` (местные, UTC${tz >= 0 ? '+' : ''}${tz})`
   const validationError = touched && !valid
-    ? 'Заполните описание и хотя бы одно из: Request ID, Device ID, номер.'
+    ? (!datesOk && hasId && hasDescription
+        ? 'Укажите корректный диапазон дат («с» не позже «по»).'
+        : 'Заполните описание и хотя бы одно из: Request ID, Device ID, номер.')
     : ''
 
   return (
@@ -63,11 +82,29 @@ export default function InvestigateForm({ onSubmit, busy, serverError }) {
                placeholder="996555123456" />
       </div>
       <div className="field">
-        <label htmlFor="when_local">Примерное время<span className="hint">{tzHint}</span></label>
-        <input id="when_local" type="datetime-local" value={values.when_local}
-               onChange={set('when_local')} />
-        <span className="hint">пусто — поиск за последние 24 часа</span>
+        <label htmlFor="period">Период поиска</label>
+        <select id="period" value={values.period} onChange={set('period')}>
+          {PERIODS.map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
       </div>
+      {custom && (
+        <>
+          <div className="field">
+            <label htmlFor="date_from">С даты<span className="hint">{tzHint}</span></label>
+            <input id="date_from" type="date" value={values.date_from}
+                   onChange={set('date_from')} max={values.date_to || undefined}
+                   className={touched && !datesOk ? 'invalid' : ''} />
+          </div>
+          <div className="field">
+            <label htmlFor="date_to">По дату (включительно)</label>
+            <input id="date_to" type="date" value={values.date_to}
+                   onChange={set('date_to')} min={values.date_from || undefined}
+                   className={touched && !datesOk ? 'invalid' : ''} />
+          </div>
+        </>
+      )}
       <div className="field">
         <label htmlFor="environment">Среда</label>
         <select id="environment" value={values.environment} onChange={set('environment')}>

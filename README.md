@@ -148,14 +148,16 @@ services tag events:
 ## Web UI (investigation form)
 
 A React form — the web analog of `/req` + `/why` (first iteration: search
-only, no LLM verdict). Fields: approximate local time,
+only, no LLM verdict). Fields: search period,
 msisdn, request id, device id, environment (stage/prod), problem description.
 Description plus at least one identifier (request id / device id / msisdn) are
 required. Every provided identifier is searched over its configured key list
 (`SENTRY_REQUEST_ID_FIELDS`, `SENTRY_DEVICE_ID_FIELDS` — default
 `deviceId,device_id` — and `SENTRY_MSISDN_FIELDS`), events are merged; an
-msisdn also pulls the application log lines of the same window. With a time
-given the search runs ±45 min (auto-widens to ±3 h), otherwise the last 24 h.
+msisdn also pulls the application log lines of the same window. The period is
+a preset — last hour / 24 h / 3 days (default) / 7 / 14 days / month — or a
+custom local date range (dates only, inclusive, converted to UTC via
+`TIMEZONE_OFFSET_HOURS`).
 The environment select is populated from `WEB_ENVIRONMENTS` (default
 `prod,stage`; values must match Sentry environment names) and overrides the
 global `SENTRY_ENVIRONMENTS` for that query. Backend: `POST /api/investigate`.

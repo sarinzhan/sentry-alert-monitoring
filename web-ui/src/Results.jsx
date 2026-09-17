@@ -1,11 +1,15 @@
+import { PERIODS } from './InvestigateForm.jsx'
+
 function ts(value) {
   return (value || '').replace('T', ' ').slice(0, 19)
 }
 
+const PERIOD_LABELS = Object.fromEntries(PERIODS)
+
 function Summary({ data }) {
   const w = data.window || {}
   const period = w.stats_period
-    ? `за последние ${w.stats_period}`
+    ? `за ${PERIOD_LABELS[w.stats_period] || w.stats_period}`
     : `${ts(w.start)} — ${ts(w.end)} UTC`
   return (
     <div className="summary">
