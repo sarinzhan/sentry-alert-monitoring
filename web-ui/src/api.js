@@ -8,8 +8,8 @@ export async function getMeta() {
   return r.json()
 }
 
-export async function investigate(body) {
-  const r = await fetch(`${BASE}api/investigate`, {
+async function post(path, body) {
+  const r = await fetch(`${BASE}api/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -18,3 +18,6 @@ export async function investigate(body) {
   if (!r.ok) throw new Error(data.error || `Ошибка ${r.status}`)
   return data
 }
+
+export const investigate = (body) => post('investigate', body)
+export const explain = (body) => post('explain', body)

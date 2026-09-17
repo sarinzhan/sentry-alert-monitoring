@@ -147,8 +147,7 @@ services tag events:
 
 ## Web UI (investigation form)
 
-A React form — the web analog of `/req` + `/why` (first iteration: search
-only, no LLM verdict). Fields: search period,
+A React form — the web analog of `/req` + `/why`. Fields: search period,
 msisdn, request id, device id, environment (stage/prod), problem description.
 Description plus at least one identifier (request id / device id / msisdn) are
 required. Every provided identifier is searched over its configured key list
@@ -162,6 +161,14 @@ custom local date range (dates only, inclusive, converted to UTC via
 The environment select is populated from `WEB_ENVIRONMENTS` (default
 `prod,stage`; values must match Sentry environment names) and overrides the
 global `SENTRY_ENVIRONMENTS` for that query. Backend: `POST /api/investigate`.
+
+When the search finds something, an **«Объяснить простыми словами»** button
+asks the agentic LLM (same GitLab + Sentry tools as `/why`) for a verdict
+written for tech-support staff: what happened, why (business rule vs code
+error), what to tell the customer, and whether/where to escalate. Needs
+`ENABLE_LLM=true`; the call is audited like every other (`web-explain` kind,
+id shown under the answer). Backend: `POST /api/explain`; slow — the nginx
+locations in front of it need `proxy_read_timeout 300s`.
 
 The UI lives in `web-ui/` (React + Vite) and runs as its own container:
 `web-ui/Dockerfile` builds the React app in a Node stage, then nginx serves

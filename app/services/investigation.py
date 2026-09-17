@@ -14,7 +14,8 @@ import datetime
 
 from app.config import (
     SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS, SENTRY_DEVICE_ID_FIELDS,
-    SENTRY_LOGS_DATASET, TZ_OFFSET_HOURS, log,
+    SENTRY_LOGS_DATASET, TZ_OFFSET_HOURS,
+    GITLAB_PROJECTS, GITLAB_REF, ENABLE_LLM_TOOLS, log,
 )
 
 PERIODS = ("1h", "24h", "3d", "7d", "14d", "30d")
@@ -113,3 +114,98 @@ async def investigate(sentry, *, description, request_id=None, device_id=None,
         "events": events,
         "logs": logs,
     }
+
+
+# --- LLM explanation for support staff (the /why analog of the web form) ---
+
+DETAIL_EVENTS = 3        # newest events fetched in full for the prompt
+
+EXPLAIN_PROMPT = (
+    "You are a senior backend engineer helping FIRST-LINE TECH SUPPORT of a "
+    "mobile operator. The support agent is NOT a programmer.\n\n"
+    "Complaint: {description}\n"
+    "Identifiers: {idents}\n"
+    "Search window: {window}; environment: {env}.\n\n"
+    "Sentry error events found (newest first):\n{events}\n\n"
+    "Application LOG lines of the same window (newest first; successful "
+    "operations appear here too — a business-logic rejection often logs "
+    "without producing an error event):\n{logs}\n\n"
+    "Full details of the newest event(s):\n{details}\n\n"
+    "{tools}"
+    "Figure out WHY the user hit the problem. An exception can be a "
+    "deliberate business rule — check before calling it a bug.\n\n"
+    "Reply in SIMPLE RUSSIAN a non-programmer understands: no stack traces, "
+    "no HTTP codes, no jargon (расшифруй, если без термина никак). Plain "
+    "text, no markdown, exactly this structure:\n"
+    "Что произошло: 1-2 предложения простыми словами\n"
+    "Причина: почему это происходит — бизнес-правило, ошибка сервиса или "
+    "проблема данных; если точно не ясно, самая вероятная версия с пометкой "
+    "«предположительно»\n"
+    "Что сказать клиенту: готовая вежливая формулировка\n"
+    "Что дальше: может ли поддержка решить сама (и как), или передать "
+    "разработчикам — какой команде/сервису и с какой информацией"
+)
+
+TOOLS_NOTE = (
+    "You have tools: read-only GitLab (read_file, find_file, search_code, "
+    "blame, commit_diff, recent_commits) over the mapped service repos "
+    "({repos}, ref {ref}); Sentry event_details(project, event_id), "
+    "related_errors(trace_id), user_events(msisdn, …) and search_logs "
+    "(full-text over application logs). Read the code path that threw "
+    "before deciding.\n\n"
+)
+
+
+async def explain(sentry, gitlab, llm, *, search):
+    """LLM explanation of a finished investigate() result, written for
+    support staff. Returns the LlmCall record, or None on LLM failure."""
+    from app.services.gitlab_tools import build_gitlab_server
+    from app.services.sentry_tools import (
+        build_sentry_server, fmt_event_details, fmt_log_line,
+    )
+
+    events, logs = search["events"], search["logs"]
+    lines, details, primary_repo = [], [], None
+    for ev in events[:20]:
+        slug = ev.get("project")
+        lines.append(f"{(ev.get('timestamp') or '').replace('T', ' ')[:19]}  "
+                     f"[{slug}]  {ev.get('title') or ev.get('message') or '?'}  "
+                     f"(event {ev.get('id')})")
+        if primary_repo is None:
+            pid = await sentry.project_id_for_slug(slug)
+            primary_repo = GITLAB_PROJECTS.get(str(pid)) if pid else None
+    for ev in events[:DETAIL_EVENTS]:
+        try:
+            full = await sentry.event_details(ev.get("project"), ev.get("id"))
+            details.append(fmt_event_details(full))
+        except Exception as e:
+            log.warning("web explain: event details failed event=%s: %s",
+                        ev.get("id"), e)
+
+    servers, allowed = {}, []
+    if ENABLE_LLM_TOOLS:
+        repos = sorted(set(GITLAB_PROJECTS.values()))
+        if gitlab.enabled and repos:
+            servers, allowed = build_gitlab_server(gitlab, primary_repo or repos[0])
+        s2, a2 = build_sentry_server(sentry)
+        if s2:
+            servers.update(s2)
+            allowed = list(allowed) + a2
+
+    w = search["window"]
+    window_h = (f"last {w['stats_period']}" if "stats_period" in w
+                else f"{w['start']} .. {w['end']} UTC")
+    idents = "; ".join(f"{s['id_type']}={s['value']}"
+                       + (f" (matched field {s['matched_field']})" if s["matched_field"] else "")
+                       for s in search["searches"])
+    tools_note = TOOLS_NOTE.format(
+        repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
+        ref=GITLAB_REF) if servers else ""
+    log_lines = [fmt_log_line(row, msg_limit=300, stack_limit=400) for row in logs]
+    prompt = EXPLAIN_PROMPT.format(
+        description=search["description"], idents=idents, window=window_h,
+        env=search["environment"] or "all",
+        events=("\n".join(lines) or "—"), logs=("\n".join(log_lines) or "—"),
+        details=("\n---\n".join(details) or "—"), tools=tools_note)
+    return await llm.complete(prompt, mcp_servers=servers or None,
+                              allowed_tools=allowed or None)

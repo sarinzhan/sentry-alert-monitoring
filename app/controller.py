@@ -144,6 +144,53 @@ async def investigate_endpoint(request: Request):
     return result
 
 
+@app.post("/api/explain")
+async def explain_endpoint(request: Request):
+    """LLM explanation of the search results in plain Russian for support
+    staff (the /why analog). Body: same as /api/investigate. Re-runs the
+    search server-side, then asks the agentic LLM (GitLab + Sentry tools) for
+    a verdict a non-programmer understands. Slow: up to a few minutes."""
+    from app.services.investigation import investigate, explain, ValidationError
+    from app.services.sentry_api import discover_error_hint
+    sentry_api, gitlab, llm = request.app.state.services
+    if not sentry_api.enabled:
+        return JSONResponse({"error": "Sentry API не настроен (SENTRY_API_TOKEN)."},
+                            status_code=503)
+    if not llm.enabled:
+        return JSONResponse({"error": "LLM выключен (ENABLE_LLM=false)."},
+                            status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    try:
+        search = await investigate(
+            sentry_api,
+            description=body.get("description"),
+            request_id=body.get("request_id"),
+            device_id=body.get("device_id"),
+            msisdn=body.get("msisdn"),
+            period=body.get("period"),
+            date_from=body.get("date_from"),
+            date_to=body.get("date_to"),
+            environment=body.get("environment"))
+    except ValidationError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    except Exception as e:
+        return JSONResponse({"error": discover_error_hint(e)}, status_code=502)
+    if not search["events"] and not search["logs"]:
+        return JSONResponse({"error": "Ничего не найдено — нечего анализировать. "
+                                      "Попробуйте другой период или идентификатор."},
+                            status_code=422)
+    rec = await explain(sentry_api, gitlab, llm, search=search)
+    if rec is None or not rec.text:
+        return JSONResponse({"error": "Не получилось получить ответ от LLM — "
+                                      "смотрите логи sentry-telegram."},
+                            status_code=502)
+    llm_id = request.app.state.llm_audit.put("web-explain", rec)
+    return {"explanation": rec.text, "llm_id": llm_id}
+
+
 @app.get("/api/llm/{llm_id}")
 async def llm_call(llm_id: str, request: Request):
     """Full record of one LLM call (prompt, tool trace, tokens, response) by the
@@ -220,6 +267,8 @@ _WEB_DIR = Path(__file__).resolve().parent / "web"
 if _WEB_DIR.is_dir():
     app.add_api_route("/admin-web/api/meta", meta, methods=["GET"])
     app.add_api_route("/admin-web/api/investigate", investigate_endpoint,
+                      methods=["POST"])
+    app.add_api_route("/admin-web/api/explain", explain_endpoint,
                       methods=["POST"])
     app.mount("/admin-web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
 

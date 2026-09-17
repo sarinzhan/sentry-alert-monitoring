@@ -34,6 +34,14 @@ button:hover { background: #4a6ecb; }
 button:disabled { background: #333846; cursor: default; }
 .error { color: #e0745c; font-size: 14px; }
 .results { margin-top: 24px; }
+.explain-bar { margin-top: 16px; display: flex; align-items: center; gap: 14px; }
+.explanation {
+  margin-top: 16px; background: #1c2620; border: 1px solid #2e4636;
+  border-radius: 10px; padding: 16px 20px;
+}
+.explanation h2 { margin: 0 0 8px; }
+.explanation-text { white-space: pre-wrap; word-break: break-word; }
+.explanation .hint { margin-top: 10px; }
 .summary { color: #a8adbb; font-size: 13px; margin-bottom: 12px; }
 .summary code, .results code { color: #d0d4de; }
 h2 { font-size: 16px; margin: 20px 0 8px; }
