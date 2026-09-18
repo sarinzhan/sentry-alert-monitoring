@@ -1,13 +1,16 @@
-"""UsersRepo — web UI accounts: username/password, role (admin|user),
-last activity. Passwords are stored as-is BY DESIGN: the admin screen shows
-and edits them (internal tool behind the corporate network). Also owns the
-persisted session-signing secret (meta table).
+"""UsersRepo — web UI accounts: username/password, role, last activity.
+Roles: admin — everything (users, projects, settings, prompts);
+manager — investigation + history + editing the prompt presets
+(role presets and problem templates); user — investigation + history only.
+Passwords are stored as-is BY DESIGN: the admin screen shows and edits them
+(internal tool behind the corporate network). Also owns the persisted
+session-signing secret (meta table).
 """
 import hmac
 import secrets
 import time
 
-ROLES = ("admin", "user")
+ROLES = ("admin", "manager", "user")
 
 COLS = ("id", "username", "password", "role", "created", "last_activity",
         "api_token")
@@ -20,6 +23,20 @@ class UsersRepo:
         # seed the first account so there's a way in on a fresh DB
         if not self.db.execute("SELECT 1 FROM auth_user LIMIT 1").fetchone():
             self.create("admin", "admin", "admin")
+        # one-time migration: a draft schema briefly renamed full-rights
+        # 'admin' to 'superadmin' (meta key roles_v2) and reused 'admin' for
+        # the prompt-editor role, now called 'manager' — collapse both back
+        if not self.db.execute(
+                "SELECT 1 FROM meta WHERE key='roles_v3'").fetchone():
+            if self.db.execute(
+                    "SELECT 1 FROM meta WHERE key='roles_v2'").fetchone():
+                self.db.execute(
+                    "UPDATE auth_user SET role='manager' WHERE role='admin'")
+            self.db.execute(
+                "UPDATE auth_user SET role='admin' WHERE role='superadmin'")
+            self.db.execute(
+                "INSERT INTO meta(key, value) VALUES('roles_v3', '1')")
+            self.db.commit()
 
     def secret(self):
         """Session-signing secret: generated once, persisted in meta."""

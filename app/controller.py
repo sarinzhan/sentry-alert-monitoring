@@ -125,10 +125,11 @@ app = FastAPI(lifespan=lifespan)
 # Every /api/* route (also under the /admin-web alias) requires a logged-in
 # user (session cookie), except the login endpoint itself. /health and the
 # Telegram/Sentry webhooks stay open — they are machine-to-machine.
-# Admin-only areas: user management (/api/users*), the project catalog
-# (/api/projects*), runtime settings (/api/settings) and prompt-preset edits
-# (writes to /api/prompts — reads are open, the form needs them); a plain
-# user gets investigation + history.
+# Role matrix: admin — everything: user management (/api/users*), the
+# project catalog (/api/projects*), runtime settings (/api/settings) and
+# prompt-preset edits; manager — investigation + history + prompt-preset edits
+# (writes to /api/prompts — reads are open, the form needs them);
+# user — investigation + history only.
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
 _ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings")
@@ -149,10 +150,13 @@ async def auth_middleware(request: Request, call_next):
         if user is None:
             return JSONResponse({"error": "не авторизован"}, status_code=401)
         rel = path[len("/admin-web"):] if path.startswith("/admin-web/") else path
-        if user["role"] != "admin" and (
-                rel.startswith(_ADMIN_ONLY)
-                or (rel.startswith("/api/prompts") and request.method != "GET")):
+        role = user["role"]
+        if role != "admin" and rel.startswith(_ADMIN_ONLY):
             return JSONResponse({"error": "нужны права администратора"},
+                                status_code=403)
+        if (role not in ("admin", "manager")
+                and rel.startswith("/api/prompts") and request.method != "GET"):
+            return JSONResponse({"error": "нужны права менеджера"},
                                 status_code=403)
         request.state.user = user
         users.touch(user["username"])      # «последняя активность»
@@ -304,7 +308,7 @@ async def users_list(request: Request):
 
 @app.post("/api/users")
 async def users_create(request: Request):
-    """Create an account: {username, password, role: admin|user}."""
+    """Create an account: {username, password, role: admin|manager|user}."""
     try:
         body = await request.json()
     except Exception:
@@ -352,10 +356,11 @@ async def users_update(uid: int, request: Request):
     role = body.get("role")
     if role is not None and role not in ROLES:
         return JSONResponse({"error": f"роль: {' | '.join(ROLES)}"}, status_code=422)
-    if (role == "user" and target["role"] == "admin"
-            and users.admin_count() == 1):
-        return JSONResponse({"error": "нельзя понизить последнего администратора"},
-                            status_code=400)
+    if (role is not None and role != "admin"
+            and target["role"] == "admin" and users.admin_count() == 1):
+        return JSONResponse(
+            {"error": "нельзя понизить последнего администратора"},
+            status_code=400)
     return _public_user(users.update(uid, username=username,
                                      password=password, role=role))
 
@@ -370,8 +375,9 @@ async def users_delete(uid: int, request: Request):
         return JSONResponse({"error": "нельзя удалить самого себя"},
                             status_code=400)
     if target["role"] == "admin" and users.admin_count() == 1:
-        return JSONResponse({"error": "нельзя удалить последнего администратора"},
-                            status_code=400)
+        return JSONResponse(
+            {"error": "нельзя удалить последнего администратора"},
+            status_code=400)
     users.delete(uid)
     return {"ok": True}
 

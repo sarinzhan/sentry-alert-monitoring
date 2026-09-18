@@ -76,6 +76,7 @@ function Row({ user, onSaved, onDeleted }) {
         <td>
           <select value={role} onChange={(e) => setRole(e.target.value)}>
             <option value="admin">admin</option>
+            <option value="manager">manager</option>
             <option value="user">user</option>
           </select>
         </td>
@@ -143,6 +144,7 @@ function AddUser({ onCreated }) {
         <label><b>Роль</b></label>
         <select value={role} onChange={(e) => setRole(e.target.value)}>
           <option value="user">user</option>
+          <option value="manager">manager</option>
           <option value="admin">admin</option>
         </select>
       </div>
@@ -176,9 +178,11 @@ export default function UsersPanel() {
   return (
     <div className="results">
       <p className="sub">
-        Доступ в веб-интерфейс: <b>admin</b> — всё, включая проекты и
-        пользователей; <b>user</b> — расследование и история. Логин и пароль
-        можно менять прямо в таблице.
+        Доступ в веб-интерфейс: <b>admin</b> — всё (пользователи,
+        проекты, настройки, промпты); <b>manager</b> — расследование, история
+        и редактирование промптов (роли ответа и шаблоны проблем);
+        <b> user</b> — расследование и история. Логин и пароль можно менять
+        прямо в таблице.
       </p>
       <table>
         <thead>

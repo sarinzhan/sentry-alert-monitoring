@@ -103,6 +103,9 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 /* daily LLM limit -> personal token prompt */
 .token-prompt { margin-top: 16px; grid-template-columns: 1fr; max-width: 720px; }
 .token-prompt code { color: #d0d4de; }
+.token-help ol { margin: 8px 0 0; padding-left: 20px; }
+.token-help li { margin-bottom: 6px; }
+.token-help a { color: #8fb4e8; }
 
 /* admin settings: limits, system prompt, prompt presets */
 .settings-block { margin-bottom: 24px; grid-template-columns: 1fr 1fr; max-width: 860px; }

@@ -5,6 +5,7 @@ import ProjectsPanel from './ProjectsPanel.jsx'
 import HistoryPanel from './HistoryPanel.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
+import PromptsPanel from './PromptsPanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import Login from './Login.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
@@ -120,6 +121,7 @@ export default function App() {
   }
 
   const isAdmin = user.role === 'admin'
+  const canPrompts = isAdmin || user.role === 'manager'
 
   return (
     <main>
@@ -129,6 +131,10 @@ export default function App() {
                   onClick={() => setView('search')}>Расследование</button>
           <button className={view === 'history' ? 'tab active' : 'tab'}
                   onClick={() => setView('history')}>История</button>
+          {canPrompts && (
+            <button className={view === 'prompts' ? 'tab active' : 'tab'}
+                    onClick={() => setView('prompts')}>Промпты</button>
+          )}
           {isAdmin && (
             <button className={view === 'projects' ? 'tab active' : 'tab'}
                     onClick={() => setView('projects')}>Проекты</button>
@@ -160,6 +166,12 @@ export default function App() {
                        setShowToken(false)
                        getMe().then((u) => u && setUser(u)).catch(() => {})
                      }} />
+      )}
+      {view === 'prompts' && canPrompts && (
+        <>
+          <h1>Промпты</h1>
+          <PromptsPanel />
+        </>
       )}
       {view === 'projects' && isAdmin && (
         <>
