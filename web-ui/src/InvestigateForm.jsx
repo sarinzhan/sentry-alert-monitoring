@@ -24,7 +24,8 @@ const EMPTY = {
   model: '',
 }
 
-export default function InvestigateForm({ onSubmit, busy, serverError }) {
+export default function InvestigateForm({ onSubmit, onAnalyze, busy, analyzing,
+                                           serverError }) {
   const [values, setValues] = useState(EMPTY)
   const [touched, setTouched] = useState(false)
   const [meta, setMeta] = useState({ environments: [], tz_offset_hours: null,
@@ -56,15 +57,26 @@ export default function InvestigateForm({ onSubmit, busy, serverError }) {
     return (e) => setValues((v) => ({ ...v, [name]: e.target.value }))
   }
 
-  function submit(e) {
-    e.preventDefault()
-    setTouched(true)
-    if (!valid || busy) return
+  function buildBody() {
     const body = {}
     for (const [k, v] of Object.entries(values)) body[k] = v.trim()
     if (custom) delete body.period
     else { delete body.date_from; delete body.date_to }
-    onSubmit(body)
+    return body
+  }
+
+  function submit(e) {
+    e.preventDefault()
+    setTouched(true)
+    if (!valid || busy) return
+    onSubmit(buildBody())
+  }
+
+  // LLM analysis straight from the form — same validation, no search first
+  function analyze() {
+    setTouched(true)
+    if (!valid || analyzing) return
+    onAnalyze(buildBody())
   }
 
   const idInvalid = touched && !hasId
@@ -168,7 +180,12 @@ export default function InvestigateForm({ onSubmit, busy, serverError }) {
                   placeholder="Например: не смог подключить пакет, приложение показало ошибку" />
       </div>
       <div className="actions">
-        <button type="submit" disabled={busy}>{busy ? 'Ищу…' : 'Найти'}</button>
+        <button type="submit" disabled={busy || analyzing}>
+          {busy ? 'Ищу…' : 'Найти'}
+        </button>
+        <button type="button" onClick={analyze} disabled={busy || analyzing}>
+          {analyzing ? 'Анализирую…' : '🤖 Анализ'}
+        </button>
         <span className="error">{validationError || serverError}</span>
       </div>
     </form>

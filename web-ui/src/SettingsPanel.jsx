@@ -6,8 +6,10 @@ import { getSettings, saveSettings, getPrompts, createPrompt, savePrompt,
 // prepared prompts (role presets + problem templates) shown in the form.
 
 function Limits({ settings, onSaved }) {
-  const [requests, setRequests] = useState(String(settings.llm_daily_requests))
-  const [tokens, setTokens] = useState(String(settings.llm_daily_tokens))
+  // '' = unlimited (stored as -1); 0 = shared token forbidden; >0 = cap
+  const show = (v) => (v < 0 ? '' : String(v))
+  const [requests, setRequests] = useState(show(settings.llm_daily_requests))
+  const [tokens, setTokens] = useState(show(settings.llm_daily_tokens))
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
 
@@ -16,8 +18,8 @@ function Limits({ settings, onSaved }) {
     setStatus('')
     try {
       onSaved(await saveSettings({
-        llm_daily_requests: Number(requests) || 0,
-        llm_daily_tokens: Number(tokens) || 0,
+        llm_daily_requests: requests.trim() === '' ? null : Number(requests),
+        llm_daily_tokens: tokens.trim() === '' ? null : Number(tokens),
       }))
       setStatus('✓ сохранено')
       setTimeout(() => setStatus(''), 2000)
@@ -31,13 +33,15 @@ function Limits({ settings, onSaved }) {
   return (
     <form className="settings-block" onSubmit={(e) => { e.preventDefault(); save() }}>
       <div className="field">
-        <label><b>Анализов в день</b> (на пользователя, 0 — без лимита)</label>
-        <input type="number" min="0" value={requests}
+        <label><b>Анализов в день</b> (на пользователя; 0 — запретить общий
+          токен, пусто — без лимита)</label>
+        <input type="number" min="0" value={requests} placeholder="без лимита"
                onChange={(e) => setRequests(e.target.value)} />
       </div>
       <div className="field">
-        <label><b>Токенов в день</b> (вх+исх на пользователя, 0 — без лимита)</label>
-        <input type="number" min="0" value={tokens}
+        <label><b>Токенов в день</b> (вх+исх на пользователя; 0 — запретить,
+          пусто — без лимита)</label>
+        <input type="number" min="0" value={tokens} placeholder="без лимита"
                onChange={(e) => setTokens(e.target.value)} />
       </div>
       <div className="actions">

@@ -196,7 +196,7 @@ def _day_start():
 def _llm_limits(request):
     """Effective daily limits (requests, tokens) on the shared Claude token:
     the admin-edited values from the settings screen, falling back to the env
-    defaults. 0 = that limit is off."""
+    defaults. Semantics: >0 = cap, 0 = shared token forbidden, <0 = unlimited."""
     s = request.app.state.settings
     return (s.get_int("llm_daily_requests", LLM_DAILY_LIMIT),
             s.get_int("llm_daily_tokens", LLM_DAILY_TOKENS))
@@ -235,19 +235,25 @@ def _llm_auth(request):
     user's personal token, else a 402 telling the UI to ask for one."""
     user = request.state.user
     req_limit, tok_limit = _llm_limits(request)
-    if req_limit <= 0 and tok_limit <= 0:
+    if req_limit < 0 and tok_limit < 0:            # both unlimited
         return None, False, None
     used_req, used_tok = _llm_usage_today(request, user["username"])
-    if not ((req_limit > 0 and used_req >= req_limit)
-            or (tok_limit > 0 and used_tok >= tok_limit)):
+    blocked = req_limit == 0 or tok_limit == 0     # shared token forbidden
+    over = ((req_limit > 0 and used_req >= req_limit)
+            or (tok_limit > 0 and used_tok >= tok_limit))
+    if not blocked and not over:
         return None, False, None
     if user["api_token"]:
         return user["api_token"], True, None
-    what = (f"{req_limit} анализов" if req_limit > 0 and used_req >= req_limit
-            else f"{tok_limit} токенов")
+    if blocked:
+        msg = "Анализы на общем токене отключены администратором."
+    else:
+        what = (f"{req_limit} анализов"
+                if req_limit > 0 and used_req >= req_limit
+                else f"{tok_limit} токенов")
+        msg = f"Дневной лимит ({what}) на общем токене исчерпан."
     return None, False, JSONResponse(
-        {"error": f"Дневной лимит ({what}) на общем токене исчерпан. "
-                  "Добавьте свой Claude токен, чтобы продолжить без лимита.",
+        {"error": msg + " Добавьте свой Claude токен, чтобы продолжить.",
          "limit_reached": True}, status_code=402)
 
 
@@ -423,15 +429,17 @@ async def settings_put(request: Request):
         s.set("system_prompt", (body.get("system_prompt") or "").strip() or None)
     for key in ("llm_daily_requests", "llm_daily_tokens"):
         if key in body:
-            try:
-                value = int(body[key])
-            except (TypeError, ValueError):
-                return JSONResponse({"error": f"{key}: нужно число"},
-                                    status_code=422)
-            if value < 0:
-                return JSONResponse({"error": f"{key}: не меньше 0"},
-                                    status_code=422)
-            s.set(key, value)
+            # None/empty = unlimited (-1); 0 = shared token forbidden; >0 = cap
+            raw = body[key]
+            if raw is None or raw == "":
+                value = -1
+            else:
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    return JSONResponse({"error": f"{key}: нужно число"},
+                                        status_code=422)
+            s.set(key, max(value, -1))
     return _settings_payload(request)
 
 

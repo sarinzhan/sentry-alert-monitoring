@@ -4,7 +4,7 @@ import { setToken } from './api.js'
 // Shown when the daily shared-token quota is spent: the user saves a personal
 // Claude token (OAuth from `claude setup-token` or an Anthropic API key) and
 // their analyses continue on it, without the limit.
-export default function TokenPrompt({ message, onSaved }) {
+export default function TokenPrompt({ message, onSaved, allowClear = false }) {
   const [token, setTokenValue] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -15,6 +15,19 @@ export default function TokenPrompt({ message, onSaved }) {
     setError('')
     try {
       await setToken(token.trim())
+      onSaved()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function clear() {
+    setBusy(true)
+    setError('')
+    try {
+      await setToken('')
       onSaved()
     } catch (err) {
       setError(err.message)
@@ -40,6 +53,10 @@ export default function TokenPrompt({ message, onSaved }) {
         <button type="submit" disabled={busy || !token.trim()}>
           {busy ? '…' : 'Сохранить токен'}
         </button>
+        {allowClear && (
+          <button type="button" className="tab danger" onClick={clear}
+                  disabled={busy}>Удалить сохранённый токен</button>
+        )}
         <span className="error">{error}</span>
       </div>
     </form>

@@ -32,11 +32,12 @@ PORT          = int(os.environ.get("PORT", "8080"))
 AUTH_SESSION_HOURS = float(os.environ.get("AUTH_SESSION_HOURS", "168"))
 # Daily per-user quota on the SHARED Claude token: number of analyses and
 # total tokens (in+out). Past either limit the user must save a personal
-# Claude token (their runs then don't touch the shared quota). 0 = unlimited.
+# Claude token (their runs then don't touch the shared quota).
+# Semantics: >0 = cap, 0 = shared token FORBIDDEN, <0 = unlimited.
 # These env values are only the DEFAULTS — the admin edits the effective
 # limits at runtime on the web settings screen (stored in the DB).
 LLM_DAILY_LIMIT = int(os.environ.get("LLM_DAILY_LIMIT", "10"))
-LLM_DAILY_TOKENS = int(os.environ.get("LLM_DAILY_TOKENS", "0"))
+LLM_DAILY_TOKENS = int(os.environ.get("LLM_DAILY_TOKENS", "-1"))
 
 # Sentry API — used to resolve a project's numeric id to its name (error webhooks
 # only carry the id). Reach Sentry internally on the shared docker network so the

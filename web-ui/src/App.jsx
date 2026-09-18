@@ -24,6 +24,7 @@ export default function App() {
   const [steps, setSteps] = useState([])
   const [usage, setUsage] = useState(null)
   const [limitMsg, setLimitMsg] = useState(null)
+  const [showToken, setShowToken] = useState(false)
 
   useEffect(() => {
     getMe().then(setUser).catch(() => setUser(null))
@@ -56,15 +57,16 @@ export default function App() {
     }
   }
 
-  async function onExplain() {
-    if (!lastBody || explaining) return
+  async function runExplain(body) {
+    if (!body || explaining) return
     setExplaining(true)
     setExplainError('')
     setLimitMsg(null)
     setSteps([])
     setUsage(null)
+    setExplanation(null)
     try {
-      await explainStream(lastBody, (ev) => {
+      await explainStream(body, (ev) => {
         if (ev.type === 'done') {
           setExplanation(ev)
           if (ev.in_tokens != null) setUsage({ in_tokens: ev.in_tokens, out_tokens: ev.out_tokens })
@@ -81,21 +83,32 @@ export default function App() {
     }
   }
 
+  const onExplain = () => runExplain(lastBody)
+
+  // «Анализ» button in the form: run the LLM directly, no search required
+  function onAnalyze(body) {
+    setLastBody(body)
+    setResult(null)
+    setError('')
+    runExplain(body)
+  }
+
   function onTokenSaved() {
     setLimitMsg(null)
     getMe().then((u) => u && setUser(u)).catch(() => {})
-    onExplain()                                   // retry on the saved token
+    if (lastBody) runExplain(lastBody)            // retry on the saved token
   }
 
-  function quotaHint() {
-    if (!user.llm_daily_limit && !user.llm_token_limit) return null
-    if (user.has_token) return 'личный токен подключён'
+  // header counters: «1/5 · 341/50 000» — requests and tokens spent today on
+  // the shared token (a limit of 0 blocks it, an unset limit is not shown)
+  function usageBadge() {
     const parts = []
-    if (user.llm_daily_limit)
-      parts.push(`анализы: ${user.llm_used_today}/${user.llm_daily_limit}`)
-    if (user.llm_token_limit)
-      parts.push(`токены: ${(user.llm_tokens_today || 0).toLocaleString('ru')}/${user.llm_token_limit.toLocaleString('ru')}`)
-    return `сегодня — ${parts.join(' · ')}`
+    if (user.llm_daily_limit >= 0)
+      parts.push(`${user.llm_used_today}/${user.llm_daily_limit}`)
+    if (user.llm_token_limit >= 0)
+      parts.push(`${(user.llm_tokens_today || 0).toLocaleString('ru')}/${user.llm_token_limit.toLocaleString('ru')}`)
+    if (user.has_token) parts.push('личный токен ✓')
+    return parts.join(' · ')
   }
 
 
@@ -130,10 +143,24 @@ export default function App() {
           )}
         </nav>
         <div className="userbox">
+          <span className="usage"
+                title="сегодня на общем токене: анализы · токены">
+            {usageBadge()}
+          </span>
           <span>{user.username} · {user.role}</span>
+          <button className="tab" onClick={() => setShowToken(!showToken)}>
+            Токен
+          </button>
           <button className="tab" onClick={onLogout}>Выйти</button>
         </div>
       </div>
+      {showToken && (
+        <TokenPrompt message="Личный Claude токен" allowClear={user.has_token}
+                     onSaved={() => {
+                       setShowToken(false)
+                       getMe().then((u) => u && setUser(u)).catch(() => {})
+                     }} />
+      )}
       {view === 'projects' && isAdmin && (
         <>
           <h1>Проекты</h1>
@@ -162,35 +189,31 @@ export default function App() {
         <>
       <h1>Расследование проблемы</h1>
       <p className="sub">Поиск ошибок и логов в Sentry по запросу, устройству или абоненту.</p>
-      <InvestigateForm onSubmit={onSubmit} busy={busy} serverError={error} />
-      {result && (
-        <>
-          {!explanation && (
-            <div className="explain-bar">
-              <button onClick={onExplain} disabled={explaining}>
-                {explaining ? 'Анализирую…' : '🤖 Объяснить простыми словами'}
-              </button>
-              <span className="hint">{quotaHint()}</span>
-              <span className="error">{explainError}</span>
-            </div>
-          )}
-          {limitMsg && <TokenPrompt message={limitMsg} onSaved={onTokenSaved} />}
-          <Reasoning steps={steps} running={explaining} usage={usage} />
-          {explanation && (
-            <div className="explanation">
-              <h2>Объяснение</h2>
-              <div className="explanation-text">{explanation.explanation}</div>
-              <div className="hint">
-                анализ ИИ — проверьте выводы · {explanation.llm_id}
-                {explanation.in_tokens != null &&
-                  ` · токены: ${explanation.in_tokens.toLocaleString('ru')} вх / ${explanation.out_tokens.toLocaleString('ru')} исх`}
-                {explanation.cost != null && ` · $${explanation.cost.toFixed(4)}`}
-              </div>
-            </div>
-          )}
-          <Results data={result} />
-        </>
+      <InvestigateForm onSubmit={onSubmit} onAnalyze={onAnalyze} busy={busy}
+                       analyzing={explaining} serverError={error} />
+      {result && !explanation && (
+        <div className="explain-bar">
+          <button onClick={onExplain} disabled={explaining}>
+            {explaining ? 'Анализирую…' : '🤖 Объяснить простыми словами'}
+          </button>
+        </div>
       )}
+      {explainError && <p className="error">{explainError}</p>}
+      {limitMsg && <TokenPrompt message={limitMsg} onSaved={onTokenSaved} />}
+      <Reasoning steps={steps} running={explaining} usage={usage} />
+      {explanation && (
+        <div className="explanation">
+          <h2>Объяснение</h2>
+          <div className="explanation-text">{explanation.explanation}</div>
+          <div className="hint">
+            анализ ИИ — проверьте выводы · {explanation.llm_id}
+            {explanation.in_tokens != null &&
+              ` · токены: ${explanation.in_tokens.toLocaleString('ru')} вх / ${explanation.out_tokens.toLocaleString('ru')} исх`}
+            {explanation.cost != null && ` · $${explanation.cost.toFixed(4)}`}
+          </div>
+        </div>
+      )}
+      {result && <Results data={result} />}
         </>
       )}
     </main>
