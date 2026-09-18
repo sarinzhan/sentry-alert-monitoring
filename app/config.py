@@ -177,7 +177,8 @@ ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
 # the default choice and is always included.
 WEB_LLM_MODELS = [m.strip() for m in os.environ.get(
     "WEB_LLM_MODELS",
-    "claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5-20251001"
+    "claude-fable-5,claude-opus-4-8,claude-sonnet-4-6,"
+    "claude-haiku-4-5-20251001"
 ).split(",") if m.strip()]
 if ANTHROPIC_MODEL not in WEB_LLM_MODELS:
     WEB_LLM_MODELS.insert(0, ANTHROPIC_MODEL)
