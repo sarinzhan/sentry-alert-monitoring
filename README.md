@@ -186,7 +186,7 @@ is the non-streaming twin). Slow — nginx in front needs
 `proxy_read_timeout 300s` and `proxy_buffering off` (the host-nginx
 `/admin-web/` location too, or events arrive only at the end).
 
-The **«Вопрос LLM»** tab (manager/admin) is a real chat: every conversation
+The **«Чат»** tab (manager/admin) is a real chat: every conversation
 is one Claude Agent SDK **session**, resumed on each follow-up message, so the
 model remembers the whole exchange — including its own earlier tool calls and
 their results («а покажи код этого метода» just works). Conversations are
@@ -199,6 +199,15 @@ tables for rendering. Mind that a resumed session re-sends the prior context
 each turn, so very long chats cost more per message — start a new chat when
 the topic changes. Backend: `GET/DELETE /api/chats[/{id}]`,
 `POST /api/chats/message` (SSE).
+
+The **«Статистика»** tab shows per-day LLM usage — runs, tokens in/out and
+cost — split between the **shared (system) token** and the user's **personal
+token**, for today / the last week / the last month. Every logged-in user
+sees their own numbers; the admin can pick any user. Days are bucketed by
+local midnight (`TIMEZONE_OFFSET_HOURS`), the same window the daily quota
+uses, and cover all web runs (investigations, chat) — Telegram commands are
+not tied to web accounts and are not included. Backend: `GET
+/api/usage?period=today|7d|30d[&username=…]`.
 
 The UI lives in `web-ui/` (React + Vite) and runs as its own container:
 `web-ui/Dockerfile` builds the React app in a Node stage, then nginx serves

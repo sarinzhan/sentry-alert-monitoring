@@ -60,6 +60,30 @@ class WebRequestsRepo:
             " AND (own_token IS NULL OR own_token=0)",
             (username, since_ts)).fetchone()[0]
 
+    def usage_by_day(self, username, since_ts, tz_offset_hours=0.0):
+        """Per-local-day usage since since_ts, split by token: [{day, shared:
+        {requests, in_tokens, out_tokens, cost}, own: {...}}], newest first.
+        Failed runs count as requests (consistent with the quota) with zero
+        tokens; pre-migration rows (own_token NULL) count as shared."""
+        off = int(tz_offset_hours * 3600)
+        rows = self.db.execute(
+            "SELECT date(at + ?, 'unixepoch') AS d,"
+            " CASE WHEN own_token=1 THEN 1 ELSE 0 END AS own,"
+            " COUNT(*),"
+            " COALESCE(SUM(COALESCE(in_tokens, 0)), 0),"
+            " COALESCE(SUM(COALESCE(out_tokens, 0)), 0),"
+            " COALESCE(SUM(COALESCE(cost_usd, 0)), 0)"
+            " FROM web_request WHERE username=? AND at>=?"
+            " GROUP BY d, own ORDER BY d DESC",
+            (off, username, since_ts)).fetchall()
+        zero = lambda: {"requests": 0, "in_tokens": 0, "out_tokens": 0, "cost": 0.0}
+        days = {}
+        for d, own, n, tin, tout, cost in rows:
+            rec = days.setdefault(d, {"day": d, "shared": zero(), "own": zero()})
+            rec["own" if own else "shared"].update(
+                requests=n, in_tokens=tin, out_tokens=tout, cost=round(cost, 4))
+        return [days[d] for d in sorted(days, reverse=True)]
+
     def list(self, limit=100):
         rows = self.db.execute(
             f"SELECT {', '.join(COLS)} FROM web_request ORDER BY at DESC LIMIT ?",

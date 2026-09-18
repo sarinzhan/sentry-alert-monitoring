@@ -127,6 +127,29 @@ async def main():
     check("delete works", chats.delete(cid, "alice") == 1
           and chats.messages(cid) == [])
 
+    # --- usage stats: per-day split shared vs personal token ---
+    from app.repositories.web_requests import WebRequestsRepo
+
+    class FakeRec:
+        text, in_tokens, out_tokens, cost, duration_ms = "ans", 100, 20, 0.01, 5
+
+    wr = WebRequestsRepo(db.conn)
+    wr.add({"description": "q1"}, rec=FakeRec(), llm_id="llm_a", username="alice")
+    wr.add({"description": "q2"}, rec=FakeRec(), llm_id="llm_b",
+           username="alice", own_token=True)
+    wr.add({"description": "q3"}, error="boom", username="alice")
+    wr.add({"description": "q4"}, rec=FakeRec(), llm_id="llm_c", username="bob")
+    days = wr.usage_by_day("alice", 0, tz_offset_hours=6)
+    check("usage: one local-day bucket", len(days) == 1)
+    check("usage: shared bucket counts failed run too",
+          days[0]["shared"]["requests"] == 2
+          and days[0]["shared"]["in_tokens"] == 100)
+    check("usage: own bucket separate",
+          days[0]["own"]["requests"] == 1
+          and days[0]["own"]["out_tokens"] == 20)
+    check("usage: scoped by user",
+          wr.usage_by_day("bob", 0, 6)[0]["shared"]["requests"] == 1)
+
     # --- ask() builds a bare prompt on resume (no system ctx duplication) ---
     import inspect
     from app.services.investigation import ask as ask_fn

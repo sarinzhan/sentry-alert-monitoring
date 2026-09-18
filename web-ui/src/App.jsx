@@ -7,6 +7,7 @@ import UsersPanel from './UsersPanel.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import PromptsPanel from './PromptsPanel.jsx'
 import AskPanel from './AskPanel.jsx'
+import UsagePanel from './UsagePanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import Login from './Login.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
@@ -142,9 +143,11 @@ export default function App() {
                   onClick={() => setView('search')}>Расследование</button>
           <button className={view === 'history' ? 'tab active' : 'tab'}
                   onClick={() => setView('history')}>История</button>
+          <button className={view === 'usage' ? 'tab active' : 'tab'}
+                  onClick={() => setView('usage')}>Статистика</button>
           {canPrompts && (
             <button className={view === 'ask' ? 'tab active' : 'tab'}
-                    onClick={() => setView('ask')}>Вопрос LLM</button>
+                    onClick={() => setView('ask')}>Чат</button>
           )}
           {canPrompts && (
             <button className={view === 'prompts' ? 'tab active' : 'tab'}
@@ -208,11 +211,15 @@ export default function App() {
           hidden via the HTML hidden attribute */}
       {canPrompts && (
         <div hidden={view !== 'ask'}>
-          <h1>Вопрос LLM</h1>
+          <h1>Чат</h1>
           <AskPanel onQuota={() =>
             getMe().then((u) => u && setUser(u)).catch(() => {})} />
         </div>
       )}
+      <div hidden={view !== 'usage'}>
+        <h1>Статистика LLM</h1>
+        <UsagePanel user={user} active={view === 'usage'} />
+      </div>
       {canPrompts && (
         <div hidden={view !== 'prompts'}>
           <h1>Промпты</h1>

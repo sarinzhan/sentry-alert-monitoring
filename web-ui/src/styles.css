@@ -116,7 +116,14 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 .preset-head input { max-width: 280px; }
 .preset.add { border-top: 1px dashed #333846; }
 .settings-block h2 { margin-top: 0; }
-/* LLM chat («Вопрос LLM» tab) */
+/* usage stats («Статистика» tab) */
+.usage-controls { display: flex; gap: 16px; align-items: center; margin-bottom: 14px; }
+.usage-controls .tabs { margin-bottom: 0; }
+.usage-controls select { width: auto; }
+td.dim { color: #6d7382; }
+tr.totals td { border-top: 2px solid #333846; }
+
+/* LLM chat («Чат» tab) */
 .chat-layout { display: flex; gap: 16px; align-items: flex-start; }
 .chat-list { width: 220px; flex: none; display: flex; flex-direction: column; gap: 6px; }
 .chat-list .new-chat { text-align: center; }

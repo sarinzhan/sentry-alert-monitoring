@@ -864,6 +864,38 @@ async def chats_delete(request: Request, conv_id: int):
     return {"deleted": conv_id}
 
 
+@app.get("/api/usage")
+async def usage_stats(request: Request):
+    """Per-day LLM usage — requests and tokens, split shared vs personal
+    token. ?period=today|7d|30d (default 7d); ?username= shows another user's
+    stats (admin only — everyone sees their own). Days are local
+    (TZ_OFFSET_HOURS), same bucketing as the daily quota."""
+    user = request.state.user
+    username = (request.query_params.get("username") or "").strip() \
+        or user["username"]
+    if username != user["username"] and user["role"] != "admin":
+        return JSONResponse({"error": "нужны права администратора"},
+                            status_code=403)
+    period = request.query_params.get("period", "7d")
+    days_n = {"today": 1, "7d": 7, "30d": 30}.get(period)
+    if days_n is None:
+        return JSONResponse({"error": "period: today | 7d | 30d"},
+                            status_code=422)
+    since = _day_start() - (days_n - 1) * 86400
+    days = request.app.state.web_requests.usage_by_day(
+        username, since, TZ_OFFSET_HOURS)
+    totals = {}
+    for kind in ("shared", "own"):
+        totals[kind] = {
+            "requests": sum(d[kind]["requests"] for d in days),
+            "in_tokens": sum(d[kind]["in_tokens"] for d in days),
+            "out_tokens": sum(d[kind]["out_tokens"] for d in days),
+            "cost": round(sum(d[kind]["cost"] for d in days), 4),
+        }
+    return {"username": username, "period": period, "days": days,
+            "totals": totals}
+
+
 @app.get("/api/history")
 async def history_list(request: Request, limit: int = 100):
     """History of web analysis runs: form fields, answer, tokens, llm id."""

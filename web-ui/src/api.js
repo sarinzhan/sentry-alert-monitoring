@@ -80,6 +80,9 @@ export const chatMessageStream = (body, onEvent) =>
   stream('chats/message', body, onEvent)
 
 export const getHistory = () => get('history').then((d) => d.requests)
+// per-day LLM usage split shared/personal token; username — admin only
+export const getUsage = (period, username) =>
+  get(`usage?period=${period}${username ? `&username=${encodeURIComponent(username)}` : ''}`)
 export const getProjects = () => get('projects').then((d) => d.projects)
 export const saveProject = (id, body) =>
   req('PUT', `projects/${encodeURIComponent(id)}`, body)
