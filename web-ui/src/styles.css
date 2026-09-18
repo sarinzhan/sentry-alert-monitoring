@@ -81,4 +81,22 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 .log .meta { color: #8a90a0; white-space: nowrap; margin-right: 8px; }
 .log .msg { white-space: pre-wrap; word-break: break-word; }
 .empty { color: #8a90a0; padding: 12px 0; }
+
+/* auth */
+.topbar { display: flex; justify-content: space-between; align-items: flex-start;
+          gap: 12px; margin-bottom: 18px; }
+.topbar .tabs { margin-bottom: 0; }
+.userbox { display: flex; align-items: center; gap: 10px;
+           color: #8a90a0; font-size: 13px; white-space: nowrap; }
+.login-wrap { max-width: 380px; margin: 10vh auto 0; }
+.login-wrap form { grid-template-columns: 1fr; }
+
+/* users admin table */
+.pass-cell { display: flex; gap: 6px; align-items: center; }
+.pass-cell input { min-width: 120px; }
+.pass-cell .tab { padding: 6px 8px; }
+.tab.danger { color: #e0745c; border-color: #5a3a34; }
+.tab.danger:hover { background: #2a1d1a; }
+.add-user { max-width: 720px; }
+.hist-detail table { margin-top: 6px; }
 @media (max-width: 720px) { form { grid-template-columns: 1fr; } }

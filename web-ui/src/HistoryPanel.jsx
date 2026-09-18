@@ -20,12 +20,14 @@ function tokens(r) {
   return `${(r.in_tokens || 0).toLocaleString('ru')} / ${(r.out_tokens || 0).toLocaleString('ru')}`
 }
 
-function Row({ r }) {
+function Row({ r, showUser }) {
   const [open, setOpen] = useState(false)
+  const span = showUser ? 7 : 6
   return (
     <>
       <tr className="hist-row" onClick={() => setOpen(!open)}>
         <td className="ts">{ts(r.at)}</td>
+        {showUser && <td className="proj">{r.username || '—'}</td>}
         <td className="proj">{idents(r)}</td>
         <td>{(r.description || '').slice(0, 80)}{(r.description || '').length > 80 ? '…' : ''}</td>
         <td className="ts">{period(r)}</td>
@@ -34,7 +36,7 @@ function Row({ r }) {
       </tr>
       {open && (
         <tr>
-          <td colSpan="6" className="hist-detail">
+          <td colSpan={span} className="hist-detail">
             <div className="hint">Описание</div>
             <div className="msg">{r.description}</div>
             {r.error
@@ -50,6 +52,23 @@ function Row({ r }) {
   )
 }
 
+// Reused by the admin users screen (per-user history log) — pass rows directly.
+export function HistoryTable({ rows, showUser = false }) {
+  if (!rows.length) return <div className="empty">Пока ни одного анализа.</div>
+  return (
+    <table>
+      <thead>
+        <tr><th>Время</th>{showUser && <th>Пользователь</th>}
+            <th>Идентификаторы</th><th>Описание</th>
+            <th>Период</th><th>Токены вх/исх</th><th></th></tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => <Row key={r.id} r={r} showUser={showUser} />)}
+      </tbody>
+    </table>
+  )
+}
+
 export default function HistoryPanel() {
   const [rows, setRows] = useState(null)
   const [error, setError] = useState('')
@@ -60,19 +79,10 @@ export default function HistoryPanel() {
 
   if (error) return <div className="error">{error}</div>
   if (!rows) return <div className="empty">Загружаю…</div>
-  if (!rows.length) return <div className="empty">Пока ни одного анализа.</div>
 
   return (
     <div className="results">
-      <table>
-        <thead>
-          <tr><th>Время</th><th>Идентификаторы</th><th>Описание</th>
-              <th>Период</th><th>Токены вх/исх</th><th></th></tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => <Row key={r.id} r={r} />)}
-        </tbody>
-      </table>
+      <HistoryTable rows={rows} showUser />
     </div>
   )
 }

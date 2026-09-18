@@ -19,7 +19,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import BOT_TOKEN, TELEGRAM_POLLING, TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, log
+from app.config import (AUTH_SESSION_HOURS, BOT_TOKEN, TELEGRAM_POLLING,
+                        TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, log)
 from app.summaries import banner
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -32,6 +33,8 @@ from app.repositories.context import ContextRepo
 from app.repositories.llm_audit import LlmAuditRepo
 from app.repositories.projects import ProjectsRepo
 from app.repositories.web_requests import WebRequestsRepo
+from app.repositories.users import UsersRepo, ROLES
+from app.services import auth as auth_tokens
 from app.services.sentry_api import SentryApiClient
 from app.services.gitlab import GitLabClient
 from app.services.llm import LlmClient
@@ -61,6 +64,7 @@ async def lifespan(app: FastAPI):
     # of truth for the id -> name/gitlab maps (edited in the web UI)
     projects = ProjectsRepo(db.conn)
     web_requests = WebRequestsRepo(db.conn)
+    users = UsersRepo(db.conn)            # seeds admin/admin on a fresh DB
 
     # --- external services ---
     sentry_api = SentryApiClient()
@@ -92,6 +96,7 @@ async def lifespan(app: FastAPI):
     app.state.sentry = sentry_api
     app.state.projects = projects
     app.state.web_requests = web_requests
+    app.state.users = users
     app.state.services = (sentry_api, gitlab, llm)
 
     await bot.start(polling=TELEGRAM_POLLING)
@@ -106,6 +111,175 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+# --- authentication ---------------------------------------------------------
+# Every /api/* route (also under the /admin-web alias) requires a logged-in
+# user (session cookie), except the login endpoint itself. /health and the
+# Telegram/Sentry webhooks stay open — they are machine-to-machine.
+# Admin-only areas: user management (/api/users*) and the project catalog
+# (/api/projects*); a plain user gets investigation + history.
+
+_AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
+_ADMIN_ONLY = ("/api/users", "/api/projects")
+_SESSION_COOKIE = "session"
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    is_api = path.startswith("/api/") or path.startswith("/admin-web/api/")
+    if is_api and path not in _AUTH_OPEN:
+        users = getattr(request.app.state, "users", None)
+        user = None
+        if users is not None:
+            token = request.cookies.get(_SESSION_COOKIE)
+            username = auth_tokens.parse_token(token, users.secret()) if token else None
+            user = users.get(username) if username else None
+        if user is None:
+            return JSONResponse({"error": "не авторизован"}, status_code=401)
+        rel = path[len("/admin-web"):] if path.startswith("/admin-web/") else path
+        if user["role"] != "admin" and rel.startswith(_ADMIN_ONLY):
+            return JSONResponse({"error": "нужны права администратора"},
+                                status_code=403)
+        request.state.user = user
+        users.touch(user["username"])      # «последняя активность»
+    return await call_next(request)
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    """Login with username+password; on success sets the session cookie and
+    returns {username, role}."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    users = request.app.state.users
+    user = users.verify(body.get("username"), body.get("password"))
+    if user is None:
+        return JSONResponse({"error": "неверный логин или пароль"},
+                            status_code=401)
+    resp = JSONResponse({"username": user["username"], "role": user["role"]})
+    resp.set_cookie(_SESSION_COOKIE,
+                    auth_tokens.make_token(user["username"], users.secret()),
+                    httponly=True, samesite="lax", path="/",
+                    max_age=int(AUTH_SESSION_HOURS * 3600))
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    """Who am I — the SPA calls this on load to decide login screen vs app."""
+    user = request.state.user
+    return {"username": user["username"], "role": user["role"]}
+
+
+# --- user management (admin only, enforced by the middleware) ---------------
+
+def _public_user(u):
+    # the password IS shown to the admin by request — internal tool
+    return {k: u[k] for k in ("id", "username", "password", "role",
+                              "created", "last_activity")}
+
+
+@app.get("/api/users")
+async def users_list(request: Request):
+    """All accounts: username, password, role, created, last activity."""
+    return {"users": [_public_user(u) for u in request.app.state.users.list()]}
+
+
+@app.post("/api/users")
+async def users_create(request: Request):
+    """Create an account: {username, password, role: admin|user}."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    role = body.get("role") or "user"
+    if not username or not password:
+        return JSONResponse({"error": "нужны логин и пароль"}, status_code=422)
+    if role not in ROLES:
+        return JSONResponse({"error": f"роль: {' | '.join(ROLES)}"}, status_code=422)
+    users = request.app.state.users
+    if users.get(username):
+        return JSONResponse({"error": f"логин «{username}» уже занят"},
+                            status_code=409)
+    return _public_user(users.create(username, password, role))
+
+
+@app.put("/api/users/{uid}")
+async def users_update(uid: int, request: Request):
+    """Edit an account: {username?, password?, role?} — omitted fields keep
+    their value. The last admin cannot be demoted."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    users = request.app.state.users
+    target = users.get_by_id(uid)
+    if target is None:
+        return JSONResponse({"error": "пользователь не найден"}, status_code=404)
+    username = body.get("username")
+    if username is not None:
+        username = username.strip()
+        if not username:
+            return JSONResponse({"error": "логин не может быть пустым"},
+                                status_code=422)
+        clash = users.get(username)
+        if clash and clash["id"] != uid:
+            return JSONResponse({"error": f"логин «{username}» уже занят"},
+                                status_code=409)
+    password = body.get("password")
+    if password is not None and not password:
+        return JSONResponse({"error": "пароль не может быть пустым"},
+                            status_code=422)
+    role = body.get("role")
+    if role is not None and role not in ROLES:
+        return JSONResponse({"error": f"роль: {' | '.join(ROLES)}"}, status_code=422)
+    if (role == "user" and target["role"] == "admin"
+            and users.admin_count() == 1):
+        return JSONResponse({"error": "нельзя понизить последнего администратора"},
+                            status_code=400)
+    return _public_user(users.update(uid, username=username,
+                                     password=password, role=role))
+
+
+@app.delete("/api/users/{uid}")
+async def users_delete(uid: int, request: Request):
+    users = request.app.state.users
+    target = users.get_by_id(uid)
+    if target is None:
+        return JSONResponse({"error": "пользователь не найден"}, status_code=404)
+    if target["username"] == request.state.user["username"]:
+        return JSONResponse({"error": "нельзя удалить самого себя"},
+                            status_code=400)
+    if target["role"] == "admin" and users.admin_count() == 1:
+        return JSONResponse({"error": "нельзя удалить последнего администратора"},
+                            status_code=400)
+    users.delete(uid)
+    return {"ok": True}
+
+
+@app.get("/api/users/{uid}/history")
+async def users_history(uid: int, request: Request, limit: int = 100):
+    """One user's analysis runs — the history log on the users screen."""
+    users = request.app.state.users
+    target = users.get_by_id(uid)
+    if target is None:
+        return JSONResponse({"error": "пользователь не найден"}, status_code=404)
+    return {"requests": request.app.state.web_requests.list_for(
+        target["username"], limit)}
+
 
 @app.get("/health")
 async def health():
@@ -185,13 +359,16 @@ async def explain_endpoint(request: Request):
             environment=body.get("environment"))
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    uname = request.state.user["username"]
     if rec is None or not rec.text:
-        request.app.state.web_requests.add(body, error="LLM call failed")
+        request.app.state.web_requests.add(body, error="LLM call failed",
+                                           username=uname)
         return JSONResponse({"error": "Не получилось получить ответ от LLM — "
                                       "смотрите логи sentry-telegram."},
                             status_code=502)
     llm_id = request.app.state.llm_audit.put("web-explain", rec)
-    request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id)
+    request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id,
+                                       username=uname)
     return {"explanation": rec.text, "llm_id": llm_id,
             "in_tokens": rec.in_tokens, "out_tokens": rec.out_tokens,
             "cost": rec.cost}
@@ -217,6 +394,7 @@ async def explain_stream(request: Request):
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
+    uname = request.state.user["username"]
 
     async def gen():
         yield _sse({"type": "status", "message": "запускаю анализ…"})
@@ -251,17 +429,20 @@ async def explain_stream(request: Request):
             try:
                 rec = task.result()
             except Exception as e:
-                request.app.state.web_requests.add(body, error=str(e)[:300])
+                request.app.state.web_requests.add(body, error=str(e)[:300],
+                                                   username=uname)
                 yield _sse({"type": "error", "error": str(e)[:300]})
                 return
             if rec is None or not rec.text:
-                request.app.state.web_requests.add(body, error="LLM call failed")
+                request.app.state.web_requests.add(body, error="LLM call failed",
+                                                   username=uname)
                 yield _sse({"type": "error",
                             "error": "Не получилось получить ответ от LLM — "
                                      "смотрите логи sentry-telegram."})
                 return
             llm_id = llm_audit.put("web-explain", rec)
-            request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id)
+            request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id,
+                                               username=uname)
             yield _sse({"type": "done", "explanation": rec.text,
                         "llm_id": llm_id, "in_tokens": rec.in_tokens,
                         "out_tokens": rec.out_tokens, "cost": rec.cost})
@@ -387,6 +568,16 @@ if _WEB_DIR.is_dir():
     app.add_api_route("/admin-web/api/projects", projects_list, methods=["GET"])
     app.add_api_route("/admin-web/api/projects/{pid}", projects_update,
                       methods=["PUT"])
+    app.add_api_route("/admin-web/api/auth/login", auth_login, methods=["POST"])
+    app.add_api_route("/admin-web/api/auth/logout", auth_logout, methods=["POST"])
+    app.add_api_route("/admin-web/api/auth/me", auth_me, methods=["GET"])
+    app.add_api_route("/admin-web/api/users", users_list, methods=["GET"])
+    app.add_api_route("/admin-web/api/users", users_create, methods=["POST"])
+    app.add_api_route("/admin-web/api/users/{uid}", users_update, methods=["PUT"])
+    app.add_api_route("/admin-web/api/users/{uid}", users_delete,
+                      methods=["DELETE"])
+    app.add_api_route("/admin-web/api/users/{uid}/history", users_history,
+                      methods=["GET"])
     app.mount("/admin-web", StaticFiles(directory=_WEB_DIR, html=True), name="web")
 
     @app.get("/")

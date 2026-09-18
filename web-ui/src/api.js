@@ -1,24 +1,30 @@
 // '/admin-web/' from vite's `base` — API calls stay under the same prefix so
-// one host-nginx `location /admin-web/` covers the whole app
+// one host-nginx `location /admin-web/` covers the whole app.
+// Auth: the session lives in an HttpOnly cookie set by /api/auth/login; on any
+// 401 (expired/removed session) we broadcast 'auth-expired' so App.jsx can
+// drop to the login screen.
 const BASE = import.meta.env.BASE_URL
 
-export async function getMeta() {
-  const r = await fetch(`${BASE}api/meta`)
-  if (!r.ok) throw new Error(`meta: ${r.status}`)
-  return r.json()
+function unauthorized() {
+  window.dispatchEvent(new Event('auth-expired'))
 }
 
-async function post(path, body) {
+async function req(method, path, body) {
   const r = await fetch(`${BASE}api/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   })
+  if (r.status === 401 && path !== 'auth/login') unauthorized()
   const data = await r.json().catch(() => ({}))
   if (!r.ok) throw new Error(data.error || `Ошибка ${r.status}`)
   return data
 }
 
+const get = (path) => req('GET', path)
+const post = (path, body) => req('POST', path, body)
+
+export const getMeta = () => get('meta')
 export const investigate = (body) => post('investigate', body)
 export const explain = (body) => post('explain', body)
 
@@ -31,6 +37,7 @@ export async function explainStream(body, onEvent) {
     body: JSON.stringify(body),
   })
   if (!r.ok || !r.body) {
+    if (r.status === 401) unauthorized()
     const data = await r.json().catch(() => ({}))
     throw new Error(data.error || `Ошибка ${r.status}`)
   }
@@ -52,25 +59,26 @@ export async function explainStream(body, onEvent) {
   }
 }
 
-export async function getHistory() {
-  const r = await fetch(`${BASE}api/history`)
-  if (!r.ok) throw new Error(`history: ${r.status}`)
-  return (await r.json()).requests
+export const getHistory = () => get('history').then((d) => d.requests)
+export const getProjects = () => get('projects').then((d) => d.projects)
+export const saveProject = (id, body) =>
+  req('PUT', `projects/${encodeURIComponent(id)}`, body)
+
+// --- auth ---
+export const login = (username, password) => post('auth/login', { username, password })
+export const logout = () => post('auth/logout', {})
+// null = not logged in (the only 401 that is a normal answer, not an error)
+export async function getMe() {
+  const r = await fetch(`${BASE}api/auth/me`)
+  if (r.status === 401) return null
+  if (!r.ok) throw new Error(`auth: ${r.status}`)
+  return r.json()
 }
 
-export async function getProjects() {
-  const r = await fetch(`${BASE}api/projects`)
-  if (!r.ok) throw new Error(`projects: ${r.status}`)
-  return (await r.json()).projects
-}
-
-export async function saveProject(id, body) {
-  const r = await fetch(`${BASE}api/projects/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  const data = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(data.error || `Ошибка ${r.status}`)
-  return data
-}
+// --- user management (admin) ---
+export const getUsers = () => get('users').then((d) => d.users)
+export const createUser = (body) => post('users', body)
+export const saveUser = (id, body) => req('PUT', `users/${id}`, body)
+export const deleteUser = (id) => req('DELETE', `users/${id}`)
+export const getUserHistory = (id) =>
+  get(`users/${id}/history`).then((d) => d.requests)

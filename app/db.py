@@ -174,6 +174,29 @@ class Database:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS ix_web_request_at ON web_request(at)")
+        try:
+            # who ran the analysis (auth_user.username at the time of the run)
+            db.execute("ALTER TABLE web_request ADD COLUMN username TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # web UI accounts (login form). role: admin | user. Passwords are kept
+        # as entered — the admin screen shows and edits them (internal tool).
+        # Seeded with admin/admin on first run (repositories.users.UsersRepo).
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_user (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                username      TEXT NOT NULL UNIQUE,
+                password      TEXT NOT NULL,
+                role          TEXT NOT NULL DEFAULT 'user',
+                created       REAL NOT NULL,
+                last_activity REAL
+            )
+            """
+        )
+        # small key-value store (session-signing secret, future one-off state)
+        db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(

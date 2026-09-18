@@ -1,12 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import InvestigateForm from './InvestigateForm.jsx'
 import Results from './Results.jsx'
 import ProjectsPanel from './ProjectsPanel.jsx'
 import HistoryPanel from './HistoryPanel.jsx'
+import UsersPanel from './UsersPanel.jsx'
 import Reasoning from './Reasoning.jsx'
-import { investigate, explainStream } from './api.js'
+import Login from './Login.jsx'
+import { investigate, explainStream, getMe, logout } from './api.js'
 
 export default function App() {
+  // undefined = checking the session, null = show login, object = logged in
+  const [user, setUser] = useState(undefined)
   const [view, setView] = useState('search')
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
@@ -17,6 +21,19 @@ export default function App() {
   const [explainError, setExplainError] = useState('')
   const [steps, setSteps] = useState([])
   const [usage, setUsage] = useState(null)
+
+  useEffect(() => {
+    getMe().then(setUser).catch(() => setUser(null))
+    const onExpired = () => setUser(null)
+    window.addEventListener('auth-expired', onExpired)
+    return () => window.removeEventListener('auth-expired', onExpired)
+  }, [])
+
+  async function onLogout() {
+    try { await logout() } catch { /* session may already be gone */ }
+    setUser(null)
+    setView('search')
+  }
 
   async function onSubmit(body) {
     setBusy(true)
@@ -59,20 +76,47 @@ export default function App() {
   }
 
 
+  if (user === undefined) {
+    return <main><div className="empty">Загружаю…</div></main>
+  }
+  if (!user) {
+    return <main><Login onLogin={setUser} /></main>
+  }
+
+  const isAdmin = user.role === 'admin'
+
   return (
     <main>
-      <nav className="tabs">
-        <button className={view === 'search' ? 'tab active' : 'tab'}
-                onClick={() => setView('search')}>Расследование</button>
-        <button className={view === 'projects' ? 'tab active' : 'tab'}
-                onClick={() => setView('projects')}>Проекты</button>
-        <button className={view === 'history' ? 'tab active' : 'tab'}
-                onClick={() => setView('history')}>История</button>
-      </nav>
-      {view === 'projects' && (
+      <div className="topbar">
+        <nav className="tabs">
+          <button className={view === 'search' ? 'tab active' : 'tab'}
+                  onClick={() => setView('search')}>Расследование</button>
+          <button className={view === 'history' ? 'tab active' : 'tab'}
+                  onClick={() => setView('history')}>История</button>
+          {isAdmin && (
+            <button className={view === 'projects' ? 'tab active' : 'tab'}
+                    onClick={() => setView('projects')}>Проекты</button>
+          )}
+          {isAdmin && (
+            <button className={view === 'users' ? 'tab active' : 'tab'}
+                    onClick={() => setView('users')}>Пользователи</button>
+          )}
+        </nav>
+        <div className="userbox">
+          <span>{user.username} · {user.role}</span>
+          <button className="tab" onClick={onLogout}>Выйти</button>
+        </div>
+      </div>
+      {view === 'projects' && isAdmin && (
         <>
           <h1>Проекты</h1>
           <ProjectsPanel />
+        </>
+      )}
+      {view === 'users' && isAdmin && (
+        <>
+          <h1>Пользователи</h1>
+          <UsersPanel />
         </>
       )}
       {view === 'history' && (
