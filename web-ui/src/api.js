@@ -34,8 +34,8 @@ export const explain = (body) => post('explain', body)
 
 // SSE over fetch: POST the form, feed each `data: {...}` event to onEvent as
 // the model works (status / text / tool / tool_result / done / error)
-export async function explainStream(body, onEvent) {
-  const r = await fetch(`${BASE}api/explain/stream`, {
+async function stream(path, body, onEvent) {
+  const r = await fetch(`${BASE}api/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -64,6 +64,11 @@ export async function explainStream(body, onEvent) {
     }
   }
 }
+
+export const explainStream = (body, onEvent) =>
+  stream('explain/stream', body, onEvent)
+// free-form question (manager/admin): system prompt + question only
+export const askStream = (body, onEvent) => stream('ask/stream', body, onEvent)
 
 export const getHistory = () => get('history').then((d) => d.requests)
 export const getProjects = () => get('projects').then((d) => d.projects)

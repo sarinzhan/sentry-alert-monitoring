@@ -91,6 +91,15 @@ assert usr.post("/api/prompts", json={"kind": "problem", "name": "x",
                                       "text": "y"}).status_code == 403
 assert usr.get("/api/users").status_code == 403
 
+# /api/ask (free-form LLM question): manager and admin pass the middleware
+# (503 here — the LLM is off in this test), a plain user gets 403
+class _Svc:
+    enabled = False
+app.state.services = (_Svc(), _Svc(), _Svc())
+assert usr.post("/api/ask/stream", json={"question": "q"}).status_code == 403
+assert mgr.post("/api/ask/stream", json={"question": "q"}).status_code == 503
+assert root.post("/api/ask/stream", json={"question": "q"}).status_code == 503
+
 # last admin is protected (demote and delete)
 users_list = root.get("/api/users").json()["users"]
 root_id = next(u["id"] for u in users_list if u["username"] == "admin")

@@ -128,8 +128,8 @@ app = FastAPI(lifespan=lifespan)
 # Role matrix: admin — everything: user management (/api/users*), the
 # project catalog (/api/projects*), runtime settings (/api/settings) and
 # prompt-preset edits; manager — investigation + history + prompt-preset edits
-# (writes to /api/prompts — reads are open, the form needs them);
-# user — investigation + history only.
+# (writes to /api/prompts — reads are open, the form needs them) + free-form
+# LLM questions (/api/ask*); user — investigation + history only.
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
 _ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings")
@@ -155,7 +155,9 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"error": "нужны права администратора"},
                                 status_code=403)
         if (role not in ("admin", "manager")
-                and rel.startswith("/api/prompts") and request.method != "GET"):
+                and (rel.startswith("/api/ask")
+                     or (rel.startswith("/api/prompts")
+                         and request.method != "GET"))):
             return JSONResponse({"error": "нужны права менеджера"},
                                 status_code=403)
         request.state.user = user
@@ -602,47 +604,19 @@ def _sse(ev):
     return f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
 
 
-@app.post("/api/explain/stream")
-async def explain_stream(request: Request):
-    """Streaming twin of /api/explain (SSE): emits the model's reasoning live
-    — status, each thought, each tool call and its result — then the final
-    explanation, so the UI can show the run like a chat instead of a spinner.
-    Events: {type: status|text|tool|tool_result|done|error, ...}."""
-    from app.services.investigation import explain, ValidationError
-    sentry_api, gitlab, llm = request.app.state.services
+def _stream_llm(request, body, uname, own, label, make_task):
+    """Shared SSE runner for /api/explain/stream and /api/ask/stream: pumps
+    the model's live events, then persists the run (web_requests + llm_audit
+    under `label`) and emits the final done/error event. make_task(on_event)
+    returns the LLM coroutine to run; body is what lands in the history."""
     llm_audit = request.app.state.llm_audit
-    if not sentry_api.enabled or not llm.enabled:
-        return JSONResponse({"error": "Sentry API или LLM не настроены."},
-                            status_code=503)
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "bad json"}, status_code=400)
-    uname = request.state.user["username"]
-    auth_token, own, err = _llm_auth(request)
-    if err is not None:
-        return err
-    model, audience, system_context, err = _explain_params(request, body)
-    if err is not None:
-        return err
+    web_requests = request.app.state.web_requests
 
     async def gen():
         yield _sse({"type": "status", "message": "запускаю анализ…"})
         queue = asyncio.Queue()
         try:
-            task = asyncio.create_task(
-                explain(sentry_api, gitlab, llm,
-                        description=body.get("description"),
-                        request_id=body.get("request_id"),
-                        device_id=body.get("device_id"),
-                        msisdn=body.get("msisdn"),
-                        period=body.get("period"),
-                        date_from=body.get("date_from"),
-                        date_to=body.get("date_to"),
-                        environment=body.get("environment"),
-                        on_event=queue.put_nowait,
-                        auth_token=auth_token, model=model,
-                        audience=audience, system_context=system_context))
+            task = asyncio.create_task(make_task(queue.put_nowait))
         except Exception as e:
             yield _sse({"type": "error", "error": str(e)[:300]})
             return
@@ -661,22 +635,20 @@ async def explain_stream(request: Request):
             try:
                 rec = task.result()
             except Exception as e:
-                request.app.state.web_requests.add(body, error=str(e)[:300],
-                                                   username=uname,
-                                                   own_token=own)
+                web_requests.add(body, error=str(e)[:300], username=uname,
+                                 own_token=own)
                 yield _sse({"type": "error", "error": str(e)[:300]})
                 return
             if rec is None or not rec.text:
-                request.app.state.web_requests.add(body, error="LLM call failed",
-                                                   username=uname,
-                                                   own_token=own)
+                web_requests.add(body, error="LLM call failed", username=uname,
+                                 own_token=own)
                 yield _sse({"type": "error",
                             "error": "Не получилось получить ответ от LLM — "
                                      "смотрите логи sentry-telegram."})
                 return
-            llm_id = llm_audit.put("web-explain", rec)
-            request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id,
-                                               username=uname, own_token=own)
+            llm_id = llm_audit.put(label, rec)
+            web_requests.add(body, rec=rec, llm_id=llm_id, username=uname,
+                             own_token=own)
             yield _sse({"type": "done", "explanation": rec.text,
                         "llm_id": llm_id, "in_tokens": rec.in_tokens,
                         "out_tokens": rec.out_tokens, "cost": rec.cost})
@@ -686,6 +658,81 @@ async def explain_stream(request: Request):
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/explain/stream")
+async def explain_stream(request: Request):
+    """Streaming twin of /api/explain (SSE): emits the model's reasoning live
+    — status, each thought, each tool call and its result — then the final
+    explanation, so the UI can show the run like a chat instead of a spinner.
+    Events: {type: status|text|tool|tool_result|done|error, ...}."""
+    from app.services.investigation import explain
+    sentry_api, gitlab, llm = request.app.state.services
+    if not sentry_api.enabled or not llm.enabled:
+        return JSONResponse({"error": "Sentry API или LLM не настроены."},
+                            status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    uname = request.state.user["username"]
+    auth_token, own, err = _llm_auth(request)
+    if err is not None:
+        return err
+    model, audience, system_context, err = _explain_params(request, body)
+    if err is not None:
+        return err
+    return _stream_llm(
+        request, body, uname, own, "web-explain",
+        lambda on_event: explain(
+            sentry_api, gitlab, llm,
+            description=body.get("description"),
+            request_id=body.get("request_id"),
+            device_id=body.get("device_id"),
+            msisdn=body.get("msisdn"),
+            period=body.get("period"),
+            date_from=body.get("date_from"),
+            date_to=body.get("date_to"),
+            environment=body.get("environment"),
+            on_event=on_event, auth_token=auth_token, model=model,
+            audience=audience, system_context=system_context))
+
+
+@app.post("/api/ask/stream")
+async def ask_stream(request: Request):
+    """Free-form question to the LLM (SSE; manager/admin only, enforced by
+    the middleware). No investigation template and no role presets — the
+    prompt is only the admin system prompt + the question; the Sentry/GitLab
+    tools stay available so the model can look things up. Body: {question,
+    model?}. Runs on the same daily quota / personal-token logic as
+    /api/explain; in the history the question lands in the description
+    column."""
+    from app.services.investigation import ask
+    sentry_api, gitlab, llm = request.app.state.services
+    if not llm.enabled:
+        return JSONResponse({"error": "LLM выключен (ENABLE_LLM=false)."},
+                            status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    question = (body.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"error": "вопрос обязателен"}, status_code=422)
+    model = (body.get("model") or "").strip() or None
+    if model and model not in WEB_LLM_MODELS:
+        return JSONResponse({"error": f"модель {model!r} не поддерживается"},
+                            status_code=422)
+    uname = request.state.user["username"]
+    auth_token, own, err = _llm_auth(request)
+    if err is not None:
+        return err
+    system_context = request.app.state.settings.get("system_prompt")
+    return _stream_llm(
+        request, {"description": question}, uname, own, "web-ask",
+        lambda on_event: ask(
+            sentry_api, gitlab, llm, question=question, on_event=on_event,
+            auth_token=auth_token, model=model, system_context=system_context))
 
 
 @app.get("/api/history")
@@ -797,6 +844,8 @@ if _WEB_DIR.is_dir():
     app.add_api_route("/admin-web/api/explain", explain_endpoint,
                       methods=["POST"])
     app.add_api_route("/admin-web/api/explain/stream", explain_stream,
+                      methods=["POST"])
+    app.add_api_route("/admin-web/api/ask/stream", ask_stream,
                       methods=["POST"])
     app.add_api_route("/admin-web/api/history", history_list, methods=["GET"])
     app.add_api_route("/admin-web/api/projects", projects_list, methods=["GET"])

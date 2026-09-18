@@ -6,6 +6,7 @@ import HistoryPanel from './HistoryPanel.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import PromptsPanel from './PromptsPanel.jsx'
+import AskPanel from './AskPanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import Login from './Login.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
@@ -132,6 +133,10 @@ export default function App() {
           <button className={view === 'history' ? 'tab active' : 'tab'}
                   onClick={() => setView('history')}>История</button>
           {canPrompts && (
+            <button className={view === 'ask' ? 'tab active' : 'tab'}
+                    onClick={() => setView('ask')}>Вопрос LLM</button>
+          )}
+          {canPrompts && (
             <button className={view === 'prompts' ? 'tab active' : 'tab'}
                     onClick={() => setView('prompts')}>Промпты</button>
           )}
@@ -166,6 +171,13 @@ export default function App() {
                        setShowToken(false)
                        getMe().then((u) => u && setUser(u)).catch(() => {})
                      }} />
+      )}
+      {view === 'ask' && canPrompts && (
+        <>
+          <h1>Вопрос LLM</h1>
+          <AskPanel onQuota={() =>
+            getMe().then((u) => u && setUser(u)).catch(() => {})} />
+        </>
       )}
       {view === 'prompts' && canPrompts && (
         <>

@@ -234,3 +234,39 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
     return await llm.complete(prompt, mcp_servers=servers,
                               allowed_tools=allowed, on_event=on_event,
                               auth_token=auth_token, model=model)
+
+
+async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
+              model=None, system_context=None):
+    """Free-form question to the LLM (the web «Вопрос» tab, manager/admin
+    only). Unlike explain(), NO investigation template, no role preset and no
+    answer-style section are added — the prompt is just the admin system
+    context + the user's question verbatim. The same read-only Sentry/GitLab
+    tools are attached when configured, so the model can look things up
+    (e.g. «к каким проектам у тебя есть доступ?»). Returns the LlmCall
+    record, or None on LLM failure."""
+    from app.services.gitlab_tools import build_gitlab_server
+    from app.services.sentry_tools import build_sentry_server
+
+    question = (question or "").strip()
+    if not question:
+        raise ValidationError("вопрос обязателен")
+
+    servers, allowed = {}, []
+    if ENABLE_LLM_TOOLS:
+        repos = sorted(set(GITLAB_PROJECTS.values()))
+        if gitlab.enabled and repos:
+            servers, allowed = build_gitlab_server(gitlab, repos[0])
+        s2, a2 = build_sentry_server(sentry)
+        if s2:
+            servers.update(s2)
+            allowed = list(allowed) + a2
+
+    system_context = (system_context or "").strip()
+    prompt = (
+        (f"About the system (context provided by the administrator):\n"
+         f"{system_context}\n\n" if system_context else "")
+        + question)
+    return await llm.complete(prompt, mcp_servers=servers or None,
+                              allowed_tools=allowed or None, on_event=on_event,
+                              auth_token=auth_token, model=model)
