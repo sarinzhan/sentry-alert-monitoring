@@ -69,13 +69,16 @@ export function HistoryTable({ rows, showUser = false }) {
   )
 }
 
-export default function HistoryPanel() {
+// The panel stays mounted while other tabs are shown; refetch on each
+// activation so new analyses appear, keeping the old rows visible meanwhile.
+export default function HistoryPanel({ active = true }) {
   const [rows, setRows] = useState(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
+    if (!active) return
     getHistory().then(setRows).catch((e) => setError(e.message))
-  }, [])
+  }, [active])
 
   if (error) return <div className="error">{error}</div>
   if (!rows) return <div className="empty">Загружаю…</div>

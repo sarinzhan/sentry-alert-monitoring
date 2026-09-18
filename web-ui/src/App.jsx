@@ -172,45 +172,45 @@ export default function App() {
                        getMe().then((u) => u && setUser(u)).catch(() => {})
                      }} />
       )}
-      {view === 'ask' && canPrompts && (
-        <>
+      {/* panels stay mounted and are only hidden, so switching tabs keeps
+          their state (form fields, chat, streams); inactive panels are
+          hidden via the HTML hidden attribute */}
+      {canPrompts && (
+        <div hidden={view !== 'ask'}>
           <h1>Вопрос LLM</h1>
           <AskPanel onQuota={() =>
             getMe().then((u) => u && setUser(u)).catch(() => {})} />
-        </>
+        </div>
       )}
-      {view === 'prompts' && canPrompts && (
-        <>
+      {canPrompts && (
+        <div hidden={view !== 'prompts'}>
           <h1>Промпты</h1>
           <PromptsPanel />
-        </>
+        </div>
       )}
-      {view === 'projects' && isAdmin && (
-        <>
+      {isAdmin && (
+        <div hidden={view !== 'projects'}>
           <h1>Проекты</h1>
           <ProjectsPanel />
-        </>
+        </div>
       )}
-      {view === 'users' && isAdmin && (
-        <>
+      {isAdmin && (
+        <div hidden={view !== 'users'}>
           <h1>Пользователи</h1>
           <UsersPanel />
-        </>
+        </div>
       )}
-      {view === 'settings' && isAdmin && (
-        <>
+      {isAdmin && (
+        <div hidden={view !== 'settings'}>
           <h1>Настройки</h1>
           <SettingsPanel />
-        </>
+        </div>
       )}
-      {view === 'history' && (
-        <>
-          <h1>История анализов</h1>
-          <HistoryPanel />
-        </>
-      )}
-      {view === 'search' && (
-        <>
+      <div hidden={view !== 'history'}>
+        <h1>История анализов</h1>
+        <HistoryPanel active={view === 'history'} />
+      </div>
+      <div hidden={view !== 'search'}>
       <h1>Расследование проблемы</h1>
       <p className="sub">Поиск ошибок и логов в Sentry по запросу, устройству или абоненту.</p>
       <InvestigateForm onSubmit={onSubmit} onAnalyze={onAnalyze} busy={busy}
@@ -238,8 +238,7 @@ export default function App() {
         </div>
       )}
       {result && <Results data={result} />}
-        </>
-      )}
+      </div>
     </main>
   )
 }
