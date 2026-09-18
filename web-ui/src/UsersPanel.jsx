@@ -80,6 +80,7 @@ function Row({ user, onSaved, onDeleted }) {
           </select>
         </td>
         <td className="ts">{ts(user.last_activity)}</td>
+        <td className="ts">{user.has_token ? 'есть' : '—'}</td>
         <td className="ts">
           <button onClick={save} disabled={!dirty || saving}>
             {saving ? '…' : 'Сохранить'}
@@ -95,7 +96,7 @@ function Row({ user, onSaved, onDeleted }) {
       </tr>
       {showHistory && (
         <tr>
-          <td colSpan="5" className="hist-detail">
+          <td colSpan="6" className="hist-detail">
             <div className="hint">История анализов — {user.username}</div>
             <UserHistory userId={user.id} />
           </td>
@@ -182,7 +183,7 @@ export default function UsersPanel() {
       <table>
         <thead>
           <tr><th>Логин</th><th>Пароль</th><th>Роль</th>
-              <th>Последняя активность</th><th></th></tr>
+              <th>Последняя активность</th><th>Свой токен</th><th></th></tr>
         </thead>
         <tbody>
           {users.map((u) => (

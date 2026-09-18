@@ -30,6 +30,10 @@ HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", "8080"))
 # Web UI login session lifetime (HttpOnly cookie). Default: 7 days.
 AUTH_SESSION_HOURS = float(os.environ.get("AUTH_SESSION_HOURS", "168"))
+# How many LLM analyses per user per day run on the SHARED token (the one
+# configured below). Past the limit the user must save a personal Claude token
+# (their runs then don't touch the shared quota). 0 = unlimited.
+LLM_DAILY_LIMIT = int(os.environ.get("LLM_DAILY_LIMIT", "10"))
 
 # Sentry API — used to resolve a project's numeric id to its name (error webhooks
 # only carry the id). Reach Sentry internally on the shared docker network so the

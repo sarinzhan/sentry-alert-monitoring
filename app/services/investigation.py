@@ -167,10 +167,12 @@ EXPLAIN_PROMPT = (
 
 async def explain(sentry, gitlab, llm, *, description, request_id=None,
                   device_id=None, msisdn=None, period=None, date_from=None,
-                  date_to=None, environment=None, on_event=None):
+                  date_to=None, environment=None, on_event=None,
+                  auth_token=None):
     """Agentic LLM investigation of a complaint, written for support staff.
     Returns the LlmCall record, or None on LLM failure. Raises
-    ValidationError on bad input. on_event streams the model's live progress
+    ValidationError on bad input. on_event streams the model's live progress;
+    auth_token runs the call on the user's personal Claude token
     (see LlmClient.complete)."""
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import build_sentry_server
@@ -211,4 +213,5 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
         repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
         ref=GITLAB_REF, turns=AGENT_MAX_TURNS)
     return await llm.complete(prompt, mcp_servers=servers,
-                              allowed_tools=allowed, on_event=on_event)
+                              allowed_tools=allowed, on_event=on_event,
+                              auth_token=auth_token)

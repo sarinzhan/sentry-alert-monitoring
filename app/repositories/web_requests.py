@@ -7,9 +7,9 @@ import time
 FORM_FIELDS = ("description", "request_id", "device_id", "msisdn",
                "period", "date_from", "date_to", "environment")
 
-COLS = ("id", "at", "username", "description", "request_id", "device_id",
-        "msisdn", "period", "date_from", "date_to", "environment", "llm_id",
-        "response", "in_tokens", "out_tokens", "cost_usd",
+COLS = ("id", "at", "username", "own_token", "description", "request_id",
+        "device_id", "msisdn", "period", "date_from", "date_to", "environment",
+        "llm_id", "response", "in_tokens", "out_tokens", "cost_usd",
         "duration_ms", "error")
 
 
@@ -17,17 +17,20 @@ class WebRequestsRepo:
     def __init__(self, conn):
         self.db = conn
 
-    def add(self, form, rec=None, llm_id=None, error=None, username=None):
+    def add(self, form, rec=None, llm_id=None, error=None, username=None,
+            own_token=False):
         """Persist one run. form is the request body; rec the LlmCall (None
-        when the run failed — pass error instead). Returns the new row id."""
+        when the run failed — pass error instead). own_token marks a run on
+        the user's personal Claude token. Returns the new row id."""
         cur = self.db.execute(
-            "INSERT INTO web_request(at, username, description, request_id,"
-            " device_id, msisdn, period, date_from, date_to, environment,"
-            " llm_id, response, in_tokens, out_tokens, cost_usd, duration_ms,"
-            " error)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO web_request(at, username, own_token, description,"
+            " request_id, device_id, msisdn, period, date_from, date_to,"
+            " environment, llm_id, response, in_tokens, out_tokens, cost_usd,"
+            " duration_ms, error)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (time.time(),
              username,
+             1 if own_token else 0,
              *((form.get(f) or "").strip() or None for f in FORM_FIELDS),
              llm_id,
              rec.text if rec else None,
@@ -38,6 +41,15 @@ class WebRequestsRepo:
              error))
         self.db.commit()
         return cur.lastrowid
+
+    def count_shared_since(self, username, since_ts):
+        """How many runs the user made on the SHARED token since since_ts —
+        drives the daily quota (LLM_DAILY_LIMIT). Personal-token runs are
+        excluded; pre-migration rows (own_token NULL) count as shared."""
+        return self.db.execute(
+            "SELECT COUNT(*) FROM web_request WHERE username=? AND at>=?"
+            " AND (own_token IS NULL OR own_token=0)",
+            (username, since_ts)).fetchone()[0]
 
     def list(self, limit=100):
         rows = self.db.execute(

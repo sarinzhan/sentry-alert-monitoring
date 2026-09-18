@@ -84,14 +84,25 @@ def auth_mode():
     return None
 
 
-def _sdk_env():
+def _token_kind(token):
+    """'subscription' for a Claude OAuth token (sk-ant-oat…), else 'api-key'."""
+    return "subscription" if "-oat" in (token or "") else "api-key"
+
+
+def _sdk_env(auth_token=None):
     """Env for the SDK's `claude` subprocess: auth, proxy, and CA trust.
 
     Passed explicitly rather than relying on inheritance, so what the subprocess
-    sees is exactly what we decided here.
+    sees is exactly what we decided here. auth_token (a user's personal Claude
+    token — OAuth or API key) replaces the shared credential for this call.
     """
     env = {}
-    if ANTHROPIC_API_KEY:
+    if auth_token:
+        if _token_kind(auth_token) == "subscription":
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = auth_token
+        else:
+            env["ANTHROPIC_API_KEY"] = auth_token
+    elif ANTHROPIC_API_KEY:
         env["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
     elif CLAUDE_CODE_OAUTH_TOKEN:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = CLAUDE_CODE_OAUTH_TOKEN
@@ -124,7 +135,7 @@ class LlmClient:
         return self._enabled
 
     async def complete(self, prompt: str, mcp_servers=None, allowed_tools=None,
-                       on_event=None):
+                       on_event=None, auth_token=None):
         """Send one prompt. Returns an LlmCall record, or None on failure.
         With mcp_servers set, runs an agentic loop (up to AGENT_MAX_TURNS turns)
         where the model may call those tools; otherwise a single completion.
@@ -136,10 +147,15 @@ class LlmClient:
 
         on_event, if given, receives live progress dicts as the run unfolds —
         {'type': 'text'|'tool'|'tool_result', ...} — so a UI can show the
-        model's reasoning like a chat (the web /api/explain/stream SSE)."""
+        model's reasoning like a chat (the web /api/explain/stream SSE).
+
+        auth_token, if given, is the user's PERSONAL Claude token (OAuth or
+        API key) — this call runs on it instead of the shared credential
+        (the web daily-quota overflow path)."""
         if not self._enabled:
             return None
         agentic = bool(mcp_servers)
+        mode = _token_kind(auth_token) if auth_token else auth_mode()
         options = ClaudeAgentOptions(
             model=ANTHROPIC_MODEL,
             max_turns=AGENT_MAX_TURNS if agentic else 1,
@@ -148,9 +164,10 @@ class LlmClient:
             allowed_tools=list(allowed_tools or []),
             permission_mode="bypassPermissions",  # headless; nothing to permit anyway
             setting_sources=[],                   # don't load CLAUDE.md/skills from disk
-            env=_sdk_env(),
+            env=_sdk_env(auth_token),
         )
-        rec = LlmCall(model=ANTHROPIC_MODEL, auth=auth_mode() or "",
+        rec = LlmCall(model=ANTHROPIC_MODEL,
+                      auth=(mode or "") + ("/personal" if auth_token else ""),
                       agentic=agentic, prompt=prompt,
                       tools_offered=list(allowed_tools or []))
         started = time.monotonic()
@@ -201,7 +218,7 @@ class LlmClient:
             log.warning("LLM call failed: %s", e)
             return None
         rec.duration_ms = int((time.monotonic() - started) * 1000)
-        if auth_mode() == "subscription":
+        if mode == "subscription":
             rec.cost = None
         log.info("llm done auth=%s agentic=%s turns=%d tools=%d in=%d out=%d cost=%s",
                  rec.auth, agentic, rec.turns, len(rec.tool_calls),

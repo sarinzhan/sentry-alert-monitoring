@@ -12,6 +12,7 @@ Endpoints:
 """
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,8 +20,9 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import (AUTH_SESSION_HOURS, BOT_TOKEN, TELEGRAM_POLLING,
-                        TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, log)
+from app.config import (AUTH_SESSION_HOURS, BOT_TOKEN, LLM_DAILY_LIMIT,
+                        TELEGRAM_POLLING, TZ_OFFSET_HOURS, WEB_ENVIRONMENTS,
+                        log)
 from app.summaries import banner
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -175,19 +177,69 @@ async def auth_logout(request: Request):
     return resp
 
 
+def _day_start():
+    """Unix ts of the local (TZ_OFFSET_HOURS) midnight — the daily quota window."""
+    off = TZ_OFFSET_HOURS * 3600
+    return (time.time() + off) // 86400 * 86400 - off
+
+
+def _llm_used_today(request, username):
+    return request.app.state.web_requests.count_shared_since(username, _day_start())
+
+
+def _llm_auth(request):
+    """Which Claude token this analysis runs on. Returns (auth_token, own, err):
+    the shared token (None) while the user's daily quota lasts, then the
+    user's personal token, else a 402 telling the UI to ask for one."""
+    user = request.state.user
+    if LLM_DAILY_LIMIT <= 0:
+        return None, False, None
+    if _llm_used_today(request, user["username"]) < LLM_DAILY_LIMIT:
+        return None, False, None
+    if user["api_token"]:
+        return user["api_token"], True, None
+    return None, False, JSONResponse(
+        {"error": f"Дневной лимит анализов ({LLM_DAILY_LIMIT}) исчерпан. "
+                  "Добавьте свой Claude токен, чтобы продолжить без лимита.",
+         "limit_reached": True}, status_code=402)
+
+
 @app.get("/api/auth/me")
 async def auth_me(request: Request):
-    """Who am I — the SPA calls this on load to decide login screen vs app."""
+    """Who am I — the SPA calls this on load to decide login screen vs app.
+    Includes the daily LLM quota state so the UI can show what's left."""
     user = request.state.user
-    return {"username": user["username"], "role": user["role"]}
+    return {"username": user["username"], "role": user["role"],
+            "has_token": bool(user["api_token"]),
+            "llm_daily_limit": LLM_DAILY_LIMIT,
+            "llm_used_today": _llm_used_today(request, user["username"])
+                              if LLM_DAILY_LIMIT > 0 else 0}
+
+
+@app.post("/api/auth/token")
+async def auth_set_token(request: Request):
+    """Save (or clear, with an empty value) the caller's personal Claude token
+    — an OAuth token from `claude setup-token` or an Anthropic API key."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    token = (body.get("token") or "").strip() or None
+    user = request.state.user
+    request.app.state.users.set_token(user["id"], token)
+    return {"has_token": bool(token)}
 
 
 # --- user management (admin only, enforced by the middleware) ---------------
 
 def _public_user(u):
-    # the password IS shown to the admin by request — internal tool
-    return {k: u[k] for k in ("id", "username", "password", "role",
-                              "created", "last_activity")}
+    # the password IS shown to the admin by request — internal tool. The
+    # personal Claude token is the user's own credential: only its presence
+    # is exposed, never the value.
+    d = {k: u[k] for k in ("id", "username", "password", "role",
+                           "created", "last_activity")}
+    d["has_token"] = bool(u["api_token"])
+    return d
 
 
 @app.get("/api/users")
@@ -346,6 +398,9 @@ async def explain_endpoint(request: Request):
         body = await request.json()
     except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
+    auth_token, own, err = _llm_auth(request)
+    if err is not None:
+        return err
     try:
         rec = await explain(
             sentry_api, gitlab, llm,
@@ -356,19 +411,20 @@ async def explain_endpoint(request: Request):
             period=body.get("period"),
             date_from=body.get("date_from"),
             date_to=body.get("date_to"),
-            environment=body.get("environment"))
+            environment=body.get("environment"),
+            auth_token=auth_token)
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     uname = request.state.user["username"]
     if rec is None or not rec.text:
         request.app.state.web_requests.add(body, error="LLM call failed",
-                                           username=uname)
+                                           username=uname, own_token=own)
         return JSONResponse({"error": "Не получилось получить ответ от LLM — "
                                       "смотрите логи sentry-telegram."},
                             status_code=502)
     llm_id = request.app.state.llm_audit.put("web-explain", rec)
     request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id,
-                                       username=uname)
+                                       username=uname, own_token=own)
     return {"explanation": rec.text, "llm_id": llm_id,
             "in_tokens": rec.in_tokens, "out_tokens": rec.out_tokens,
             "cost": rec.cost}
@@ -395,6 +451,9 @@ async def explain_stream(request: Request):
     except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
     uname = request.state.user["username"]
+    auth_token, own, err = _llm_auth(request)
+    if err is not None:
+        return err
 
     async def gen():
         yield _sse({"type": "status", "message": "запускаю анализ…"})
@@ -410,7 +469,8 @@ async def explain_stream(request: Request):
                         date_from=body.get("date_from"),
                         date_to=body.get("date_to"),
                         environment=body.get("environment"),
-                        on_event=queue.put_nowait))
+                        on_event=queue.put_nowait,
+                        auth_token=auth_token))
         except Exception as e:
             yield _sse({"type": "error", "error": str(e)[:300]})
             return
@@ -430,19 +490,21 @@ async def explain_stream(request: Request):
                 rec = task.result()
             except Exception as e:
                 request.app.state.web_requests.add(body, error=str(e)[:300],
-                                                   username=uname)
+                                                   username=uname,
+                                                   own_token=own)
                 yield _sse({"type": "error", "error": str(e)[:300]})
                 return
             if rec is None or not rec.text:
                 request.app.state.web_requests.add(body, error="LLM call failed",
-                                                   username=uname)
+                                                   username=uname,
+                                                   own_token=own)
                 yield _sse({"type": "error",
                             "error": "Не получилось получить ответ от LLM — "
                                      "смотрите логи sentry-telegram."})
                 return
             llm_id = llm_audit.put("web-explain", rec)
             request.app.state.web_requests.add(body, rec=rec, llm_id=llm_id,
-                                               username=uname)
+                                               username=uname, own_token=own)
             yield _sse({"type": "done", "explanation": rec.text,
                         "llm_id": llm_id, "in_tokens": rec.in_tokens,
                         "out_tokens": rec.out_tokens, "cost": rec.cost})
@@ -571,6 +633,8 @@ if _WEB_DIR.is_dir():
     app.add_api_route("/admin-web/api/auth/login", auth_login, methods=["POST"])
     app.add_api_route("/admin-web/api/auth/logout", auth_logout, methods=["POST"])
     app.add_api_route("/admin-web/api/auth/me", auth_me, methods=["GET"])
+    app.add_api_route("/admin-web/api/auth/token", auth_set_token,
+                      methods=["POST"])
     app.add_api_route("/admin-web/api/users", users_list, methods=["GET"])
     app.add_api_route("/admin-web/api/users", users_create, methods=["POST"])
     app.add_api_route("/admin-web/api/users/{uid}", users_update, methods=["PUT"])

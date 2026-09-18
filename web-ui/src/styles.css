@@ -99,4 +99,8 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 .tab.danger:hover { background: #2a1d1a; }
 .add-user { max-width: 720px; }
 .hist-detail table { margin-top: 6px; }
+
+/* daily LLM limit -> personal token prompt */
+.token-prompt { margin-top: 16px; grid-template-columns: 1fr; max-width: 720px; }
+.token-prompt code { color: #d0d4de; }
 @media (max-width: 720px) { form { grid-template-columns: 1fr; } }

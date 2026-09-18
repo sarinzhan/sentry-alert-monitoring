@@ -6,6 +6,7 @@ import HistoryPanel from './HistoryPanel.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import Login from './Login.jsx'
+import TokenPrompt from './TokenPrompt.jsx'
 import { investigate, explainStream, getMe, logout } from './api.js'
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
   const [explainError, setExplainError] = useState('')
   const [steps, setSteps] = useState([])
   const [usage, setUsage] = useState(null)
+  const [limitMsg, setLimitMsg] = useState(null)
 
   useEffect(() => {
     getMe().then(setUser).catch(() => setUser(null))
@@ -57,6 +59,7 @@ export default function App() {
     if (!lastBody || explaining) return
     setExplaining(true)
     setExplainError('')
+    setLimitMsg(null)
     setSteps([])
     setUsage(null)
     try {
@@ -69,10 +72,25 @@ export default function App() {
         else setSteps((s) => [...s, ev])
       })
     } catch (e) {
-      setExplainError(e.message)
+      if (e.limitReached) setLimitMsg(e.message)
+      else setExplainError(e.message)
     } finally {
       setExplaining(false)
+      getMe().then((u) => u && setUser(u)).catch(() => {})  // refresh quota
     }
+  }
+
+  function onTokenSaved() {
+    setLimitMsg(null)
+    getMe().then((u) => u && setUser(u)).catch(() => {})
+    onExplain()                                   // retry on the saved token
+  }
+
+  function quotaHint() {
+    if (!user.llm_daily_limit) return null
+    if (user.has_token) return 'личный токен подключён'
+    const left = Math.max(0, user.llm_daily_limit - user.llm_used_today)
+    return `осталось анализов сегодня: ${left} из ${user.llm_daily_limit}`
   }
 
 
@@ -137,9 +155,11 @@ export default function App() {
               <button onClick={onExplain} disabled={explaining}>
                 {explaining ? 'Анализирую…' : '🤖 Объяснить простыми словами'}
               </button>
+              <span className="hint">{quotaHint()}</span>
               <span className="error">{explainError}</span>
             </div>
           )}
+          {limitMsg && <TokenPrompt message={limitMsg} onSaved={onTokenSaved} />}
           <Reasoning steps={steps} running={explaining} usage={usage} />
           {explanation && (
             <div className="explanation">

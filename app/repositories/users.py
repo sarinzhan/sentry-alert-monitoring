@@ -9,7 +9,8 @@ import time
 
 ROLES = ("admin", "user")
 
-COLS = ("id", "username", "password", "role", "created", "last_activity")
+COLS = ("id", "username", "password", "role", "created", "last_activity",
+        "api_token")
 
 
 class UsersRepo:
@@ -80,6 +81,12 @@ class UsersRepo:
              uid))
         self.db.commit()
         return self.get_by_id(uid)
+
+    def set_token(self, uid, token):
+        """Save (or clear, with None) the user's personal Claude token."""
+        self.db.execute("UPDATE auth_user SET api_token=? WHERE id=?",
+                        (token, uid))
+        self.db.commit()
 
     def delete(self, uid):
         self.db.execute("DELETE FROM auth_user WHERE id=?", (uid,))

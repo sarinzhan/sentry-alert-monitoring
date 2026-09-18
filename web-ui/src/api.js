@@ -17,7 +17,11 @@ async function req(method, path, body) {
   })
   if (r.status === 401 && path !== 'auth/login') unauthorized()
   const data = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(data.error || `Ошибка ${r.status}`)
+  if (!r.ok) {
+    const e = new Error(data.error || `Ошибка ${r.status}`)
+    e.limitReached = !!data.limit_reached   // daily LLM quota -> token prompt
+    throw e
+  }
   return data
 }
 
@@ -39,7 +43,9 @@ export async function explainStream(body, onEvent) {
   if (!r.ok || !r.body) {
     if (r.status === 401) unauthorized()
     const data = await r.json().catch(() => ({}))
-    throw new Error(data.error || `Ошибка ${r.status}`)
+    const e = new Error(data.error || `Ошибка ${r.status}`)
+    e.limitReached = !!data.limit_reached
+    throw e
   }
   const reader = r.body.getReader()
   const decoder = new TextDecoder()
@@ -67,6 +73,8 @@ export const saveProject = (id, body) =>
 // --- auth ---
 export const login = (username, password) => post('auth/login', { username, password })
 export const logout = () => post('auth/logout', {})
+// personal Claude token (used automatically after the daily quota); '' clears
+export const setToken = (token) => post('auth/token', { token })
 // null = not logged in (the only 401 that is a normal answer, not an error)
 export async function getMe() {
   const r = await fetch(`${BASE}api/auth/me`)

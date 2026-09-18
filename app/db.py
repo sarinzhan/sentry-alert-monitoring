@@ -174,11 +174,17 @@ class Database:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS ix_web_request_at ON web_request(at)")
-        try:
+        for stmt in (
             # who ran the analysis (auth_user.username at the time of the run)
-            db.execute("ALTER TABLE web_request ADD COLUMN username TEXT")
-        except sqlite3.OperationalError:
-            pass
+            "ALTER TABLE web_request ADD COLUMN username TEXT",
+            # 1 = ran on the user's personal Claude token (doesn't count
+            # against the shared-token daily quota, LLM_DAILY_LIMIT)
+            "ALTER TABLE web_request ADD COLUMN own_token INTEGER DEFAULT 0",
+        ):
+            try:
+                db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
 
         # web UI accounts (login form). role: admin | user. Passwords are kept
         # as entered — the admin screen shows and edits them (internal tool).
@@ -195,6 +201,12 @@ class Database:
             )
             """
         )
+        try:
+            # personal Claude token (OAuth or API key) — used for the user's
+            # analyses once their daily shared-token quota is spent
+            db.execute("ALTER TABLE auth_user ADD COLUMN api_token TEXT")
+        except sqlite3.OperationalError:
+            pass
         # small key-value store (session-signing secret, future one-off state)
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
