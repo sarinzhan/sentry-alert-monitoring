@@ -4,6 +4,7 @@ import Results from './Results.jsx'
 import ProjectsPanel from './ProjectsPanel.jsx'
 import HistoryPanel from './HistoryPanel.jsx'
 import UsersPanel from './UsersPanel.jsx'
+import SettingsPanel from './SettingsPanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import Login from './Login.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
@@ -87,10 +88,14 @@ export default function App() {
   }
 
   function quotaHint() {
-    if (!user.llm_daily_limit) return null
+    if (!user.llm_daily_limit && !user.llm_token_limit) return null
     if (user.has_token) return 'личный токен подключён'
-    const left = Math.max(0, user.llm_daily_limit - user.llm_used_today)
-    return `осталось анализов сегодня: ${left} из ${user.llm_daily_limit}`
+    const parts = []
+    if (user.llm_daily_limit)
+      parts.push(`анализы: ${user.llm_used_today}/${user.llm_daily_limit}`)
+    if (user.llm_token_limit)
+      parts.push(`токены: ${(user.llm_tokens_today || 0).toLocaleString('ru')}/${user.llm_token_limit.toLocaleString('ru')}`)
+    return `сегодня — ${parts.join(' · ')}`
   }
 
 
@@ -119,6 +124,10 @@ export default function App() {
             <button className={view === 'users' ? 'tab active' : 'tab'}
                     onClick={() => setView('users')}>Пользователи</button>
           )}
+          {isAdmin && (
+            <button className={view === 'settings' ? 'tab active' : 'tab'}
+                    onClick={() => setView('settings')}>Настройки</button>
+          )}
         </nav>
         <div className="userbox">
           <span>{user.username} · {user.role}</span>
@@ -135,6 +144,12 @@ export default function App() {
         <>
           <h1>Пользователи</h1>
           <UsersPanel />
+        </>
+      )}
+      {view === 'settings' && isAdmin && (
+        <>
+          <h1>Настройки</h1>
+          <SettingsPanel />
         </>
       )}
       {view === 'history' && (

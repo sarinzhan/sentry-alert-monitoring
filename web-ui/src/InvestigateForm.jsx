@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getMeta } from './api.js'
+import { getMeta, getPrompts } from './api.js'
 
 export const PERIODS = [
   ['1h', 'последний час'],
@@ -20,16 +20,30 @@ const EMPTY = {
   date_to: '',
   environment: '',
   description: '',
+  role_id: '',
+  model: '',
 }
 
 export default function InvestigateForm({ onSubmit, busy, serverError }) {
   const [values, setValues] = useState(EMPTY)
   const [touched, setTouched] = useState(false)
-  const [meta, setMeta] = useState({ environments: [], tz_offset_hours: null })
+  const [meta, setMeta] = useState({ environments: [], tz_offset_hours: null,
+                                     models: [], default_model: '' })
+  const [prompts, setPrompts] = useState({ roles: [], problems: [] })
+  const [template, setTemplate] = useState('')
 
   useEffect(() => {
     getMeta().then(setMeta).catch(() => {})
+    getPrompts().then(setPrompts).catch(() => {})
   }, [])
+
+  // a problem template prefills the description; the user then adds details
+  function applyTemplate(e) {
+    const id = e.target.value
+    setTemplate(id)
+    const p = prompts.problems.find((x) => String(x.id) === id)
+    if (p) setValues((v) => ({ ...v, description: p.text }))
+  }
 
   const hasId = ['request_id', 'device_id', 'msisdn'].some((k) => values[k].trim())
   const hasDescription = Boolean(values.description.trim())
@@ -114,6 +128,37 @@ export default function InvestigateForm({ onSubmit, busy, serverError }) {
           ))}
         </select>
       </div>
+      {prompts.problems.length > 0 && (
+        <div className="field">
+          <label htmlFor="template">Шаблон проблемы</label>
+          <select id="template" value={template} onChange={applyTemplate}>
+            <option value="">— не использовать —</option>
+            {prompts.problems.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      <div className="field">
+        <label htmlFor="role_id">Ответ для</label>
+        <select id="role_id" value={values.role_id} onChange={set('role_id')}>
+          <option value="">стандартный (поддержка)</option>
+          {prompts.roles.map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+        </select>
+      </div>
+      {meta.models.length > 0 && (
+        <div className="field">
+          <label htmlFor="model">Модель ИИ</label>
+          <select id="model" value={values.model} onChange={set('model')}>
+            <option value="">{`по умолчанию (${meta.default_model})`}</option>
+            {meta.models.filter((m) => m !== meta.default_model).map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+      )}
       <div className="field wide">
         <label htmlFor="description">
           <b>Описание проблемы</b> <span className="req">*</span>

@@ -135,7 +135,7 @@ class LlmClient:
         return self._enabled
 
     async def complete(self, prompt: str, mcp_servers=None, allowed_tools=None,
-                       on_event=None, auth_token=None):
+                       on_event=None, auth_token=None, model=None):
         """Send one prompt. Returns an LlmCall record, or None on failure.
         With mcp_servers set, runs an agentic loop (up to AGENT_MAX_TURNS turns)
         where the model may call those tools; otherwise a single completion.
@@ -151,13 +151,15 @@ class LlmClient:
 
         auth_token, if given, is the user's PERSONAL Claude token (OAuth or
         API key) — this call runs on it instead of the shared credential
-        (the web daily-quota overflow path)."""
+        (the web daily-quota overflow path). model overrides ANTHROPIC_MODEL
+        for this call (the web UI model selector)."""
         if not self._enabled:
             return None
         agentic = bool(mcp_servers)
         mode = _token_kind(auth_token) if auth_token else auth_mode()
+        model = model or ANTHROPIC_MODEL
         options = ClaudeAgentOptions(
-            model=ANTHROPIC_MODEL,
+            model=model,
             max_turns=AGENT_MAX_TURNS if agentic else 1,
             tools=[],                             # no built-ins: no fs/bash/web access
             mcp_servers=mcp_servers or {},        # in-process MCP tools (gitlab)
@@ -166,7 +168,7 @@ class LlmClient:
             setting_sources=[],                   # don't load CLAUDE.md/skills from disk
             env=_sdk_env(auth_token),
         )
-        rec = LlmCall(model=ANTHROPIC_MODEL,
+        rec = LlmCall(model=model,
                       auth=(mode or "") + ("/personal" if auth_token else ""),
                       agentic=agentic, prompt=prompt,
                       tools_offered=list(allowed_tools or []))

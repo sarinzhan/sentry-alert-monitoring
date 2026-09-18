@@ -103,4 +103,14 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 /* daily LLM limit -> personal token prompt */
 .token-prompt { margin-top: 16px; grid-template-columns: 1fr; max-width: 720px; }
 .token-prompt code { color: #d0d4de; }
+
+/* admin settings: limits, system prompt, prompt presets */
+.settings-block { margin-bottom: 24px; grid-template-columns: 1fr 1fr; max-width: 860px; }
+.settings-block .field.wide, .settings-block .actions { grid-column: 1 / -1; }
+.preset { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px;
+          padding: 10px 0; border-top: 1px solid #2a2e38; }
+.preset-head { display: flex; gap: 8px; align-items: center; }
+.preset-head input { max-width: 280px; }
+.preset.add { border-top: 1px dashed #333846; }
+.settings-block h2 { margin-top: 0; }
 @media (max-width: 720px) { form { grid-template-columns: 1fr; } }

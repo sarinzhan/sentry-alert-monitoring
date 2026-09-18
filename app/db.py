@@ -207,8 +207,23 @@ class Database:
             db.execute("ALTER TABLE auth_user ADD COLUMN api_token TEXT")
         except sqlite3.OperationalError:
             pass
-        # small key-value store (session-signing secret, future one-off state)
+        # small key-value store: session-signing secret + runtime settings the
+        # admin edits in the web UI (system prompt, daily LLM limits)
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+
+        # prepared prompts for the web investigation form. kind:
+        #   role    — who the LLM answer is written for (client / tester /
+        #             support / backend dev); text replaces the answer-style
+        #             section of the explain prompt
+        #   problem — common complaint templates; text prefills the
+        #             description field
+        # Seeded with defaults on first run (repositories.prompts.PromptsRepo),
+        # then edited by the admin in the web UI.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS prompt_preset ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,"
+            " name TEXT NOT NULL, text TEXT NOT NULL, updated REAL NOT NULL)"
+        )
 
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(

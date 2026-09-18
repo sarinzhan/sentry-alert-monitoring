@@ -122,9 +122,16 @@ async def investigate(sentry, *, description, request_id=None, device_id=None,
 # to stop (find_events / search_logs / event_details / related_errors +
 # read-only GitLab).
 
-EXPLAIN_PROMPT = (
-    "You are a senior backend engineer helping FIRST-LINE TECH SUPPORT of a "
-    "mobile operator. The support agent is NOT a programmer.\n\n"
+# The prompt is assembled from three parts:
+#   1. optional system context — the admin-written general description of the
+#      platform (web settings screen), so the model knows the domain;
+#   2. EXPLAIN_CORE — the investigation task itself (below);
+#   3. an answer-style section: a role preset chosen in the form (for client /
+#      tester / support / backend — prompt_preset kind='role'), falling back
+#      to DEFAULT_STYLE (the support wording).
+EXPLAIN_CORE = (
+    "You are a senior backend engineer investigating a customer complaint "
+    "for a mobile operator.\n\n"
     "Complaint: {description}\n"
     "Identifiers: {idents}\n"
     "Time window the agent chose: {window} — use it in tool calls; widen it "
@@ -147,8 +154,11 @@ EXPLAIN_PROMPT = (
     "it. Spend at most half on tool calls; if a tool errors twice, stop "
     "using it; when the budget runs low, answer with the best conclusion "
     "from what you have. If you find nothing at all, say so honestly and "
-    "suggest what the support agent should clarify (exact time, other "
-    "identifiers).\n\n"
+    "suggest what the requester should clarify (exact time, other "
+    "identifiers)."
+)
+
+DEFAULT_STYLE = (
     "Reply in SIMPLE RUSSIAN a non-programmer understands: no stack traces, "
     "no HTTP codes, no jargon (расшифруй, если без термина никак). Plain "
     "text, no markdown, exactly this structure:\n"
@@ -168,12 +178,15 @@ EXPLAIN_PROMPT = (
 async def explain(sentry, gitlab, llm, *, description, request_id=None,
                   device_id=None, msisdn=None, period=None, date_from=None,
                   date_to=None, environment=None, on_event=None,
-                  auth_token=None):
-    """Agentic LLM investigation of a complaint, written for support staff.
-    Returns the LlmCall record, or None on LLM failure. Raises
-    ValidationError on bad input. on_event streams the model's live progress;
-    auth_token runs the call on the user's personal Claude token
-    (see LlmClient.complete)."""
+                  auth_token=None, model=None, audience=None,
+                  system_context=None):
+    """Agentic LLM investigation of a complaint. Returns the LlmCall record,
+    or None on LLM failure. Raises ValidationError on bad input. on_event
+    streams the model's live progress; auth_token runs the call on the user's
+    personal Claude token; model overrides the default model (the web UI
+    selector); audience replaces the answer-style section (a role preset:
+    client / tester / support / backend); system_context is the admin-written
+    description of the platform, prepended to the prompt."""
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import build_sentry_server
 
@@ -205,13 +218,19 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
 
     window_h = (f"last {window['stats_period']}" if "stats_period" in window
                 else f"{window['start']} .. {window['end']} UTC")
-    prompt = EXPLAIN_PROMPT.format(
+    core = EXPLAIN_CORE.format(
         description=description,
         idents="; ".join(f"{k}={v}" for k, v in idents),
         window=window_h,
         env=(environment or "").strip() or "all",
         repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
         ref=GITLAB_REF, turns=AGENT_MAX_TURNS)
+    system_context = (system_context or "").strip()
+    prompt = (
+        (f"About the system you are investigating (context provided by the "
+         f"administrator):\n{system_context}\n\n" if system_context else "")
+        + core + "\n\n"
+        + ((audience or "").strip() or DEFAULT_STYLE))
     return await llm.complete(prompt, mcp_servers=servers,
                               allowed_tools=allowed, on_event=on_event,
-                              auth_token=auth_token)
+                              auth_token=auth_token, model=model)

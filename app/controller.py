@@ -20,9 +20,9 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import (AUTH_SESSION_HOURS, BOT_TOKEN, LLM_DAILY_LIMIT,
-                        TELEGRAM_POLLING, TZ_OFFSET_HOURS, WEB_ENVIRONMENTS,
-                        log)
+from app.config import (ANTHROPIC_MODEL, AUTH_SESSION_HOURS, BOT_TOKEN,
+                        LLM_DAILY_LIMIT, LLM_DAILY_TOKENS, TELEGRAM_POLLING,
+                        TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, WEB_LLM_MODELS, log)
 from app.summaries import banner
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -36,6 +36,8 @@ from app.repositories.llm_audit import LlmAuditRepo
 from app.repositories.projects import ProjectsRepo
 from app.repositories.web_requests import WebRequestsRepo
 from app.repositories.users import UsersRepo, ROLES
+from app.repositories.settings import SettingsRepo
+from app.repositories.prompts import PromptsRepo, KINDS
 from app.services import auth as auth_tokens
 from app.services.sentry_api import SentryApiClient
 from app.services.gitlab import GitLabClient
@@ -67,6 +69,8 @@ async def lifespan(app: FastAPI):
     projects = ProjectsRepo(db.conn)
     web_requests = WebRequestsRepo(db.conn)
     users = UsersRepo(db.conn)            # seeds admin/admin on a fresh DB
+    settings = SettingsRepo(db.conn)      # runtime settings (limits, sys prompt)
+    prompts = PromptsRepo(db.conn)        # role/problem presets, seeds defaults
 
     # --- external services ---
     sentry_api = SentryApiClient()
@@ -99,6 +103,8 @@ async def lifespan(app: FastAPI):
     app.state.projects = projects
     app.state.web_requests = web_requests
     app.state.users = users
+    app.state.settings = settings
+    app.state.prompts = prompts
     app.state.services = (sentry_api, gitlab, llm)
 
     await bot.start(polling=TELEGRAM_POLLING)
@@ -119,11 +125,13 @@ app = FastAPI(lifespan=lifespan)
 # Every /api/* route (also under the /admin-web alias) requires a logged-in
 # user (session cookie), except the login endpoint itself. /health and the
 # Telegram/Sentry webhooks stay open — they are machine-to-machine.
-# Admin-only areas: user management (/api/users*) and the project catalog
-# (/api/projects*); a plain user gets investigation + history.
+# Admin-only areas: user management (/api/users*), the project catalog
+# (/api/projects*), runtime settings (/api/settings) and prompt-preset edits
+# (writes to /api/prompts — reads are open, the form needs them); a plain
+# user gets investigation + history.
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
-_ADMIN_ONLY = ("/api/users", "/api/projects")
+_ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings")
 _SESSION_COOKIE = "session"
 
 
@@ -141,7 +149,9 @@ async def auth_middleware(request: Request, call_next):
         if user is None:
             return JSONResponse({"error": "не авторизован"}, status_code=401)
         rel = path[len("/admin-web"):] if path.startswith("/admin-web/") else path
-        if user["role"] != "admin" and rel.startswith(_ADMIN_ONLY):
+        if user["role"] != "admin" and (
+                rel.startswith(_ADMIN_ONLY)
+                or (rel.startswith("/api/prompts") and request.method != "GET")):
             return JSONResponse({"error": "нужны права администратора"},
                                 status_code=403)
         request.state.user = user
@@ -183,8 +193,40 @@ def _day_start():
     return (time.time() + off) // 86400 * 86400 - off
 
 
-def _llm_used_today(request, username):
-    return request.app.state.web_requests.count_shared_since(username, _day_start())
+def _llm_limits(request):
+    """Effective daily limits (requests, tokens) on the shared Claude token:
+    the admin-edited values from the settings screen, falling back to the env
+    defaults. 0 = that limit is off."""
+    s = request.app.state.settings
+    return (s.get_int("llm_daily_requests", LLM_DAILY_LIMIT),
+            s.get_int("llm_daily_tokens", LLM_DAILY_TOKENS))
+
+
+def _llm_usage_today(request, username):
+    """(requests, tokens) the user spent on the shared token since local midnight."""
+    wr = request.app.state.web_requests
+    day = _day_start()
+    return (wr.count_shared_since(username, day),
+            wr.tokens_shared_since(username, day))
+
+
+def _explain_params(request, body):
+    """Per-run LLM options from the form: the chosen model (validated against
+    WEB_LLM_MODELS), the role preset text (audience) and the admin system
+    prompt. Returns (model, audience, system_context, err)."""
+    model = (body.get("model") or "").strip() or None
+    if model and model not in WEB_LLM_MODELS:
+        return None, None, None, JSONResponse(
+            {"error": f"модель {model!r} не поддерживается"}, status_code=422)
+    audience = None
+    role_id = body.get("role_id")
+    if role_id:
+        preset = request.app.state.prompts.get(role_id)
+        if preset is None or preset["kind"] != "role":
+            return None, None, None, JSONResponse(
+                {"error": "неизвестный шаблон роли"}, status_code=422)
+        audience = preset["text"]
+    return model, audience, request.app.state.settings.get("system_prompt"), None
 
 
 def _llm_auth(request):
@@ -192,14 +234,19 @@ def _llm_auth(request):
     the shared token (None) while the user's daily quota lasts, then the
     user's personal token, else a 402 telling the UI to ask for one."""
     user = request.state.user
-    if LLM_DAILY_LIMIT <= 0:
+    req_limit, tok_limit = _llm_limits(request)
+    if req_limit <= 0 and tok_limit <= 0:
         return None, False, None
-    if _llm_used_today(request, user["username"]) < LLM_DAILY_LIMIT:
+    used_req, used_tok = _llm_usage_today(request, user["username"])
+    if not ((req_limit > 0 and used_req >= req_limit)
+            or (tok_limit > 0 and used_tok >= tok_limit)):
         return None, False, None
     if user["api_token"]:
         return user["api_token"], True, None
+    what = (f"{req_limit} анализов" if req_limit > 0 and used_req >= req_limit
+            else f"{tok_limit} токенов")
     return None, False, JSONResponse(
-        {"error": f"Дневной лимит анализов ({LLM_DAILY_LIMIT}) исчерпан. "
+        {"error": f"Дневной лимит ({what}) на общем токене исчерпан. "
                   "Добавьте свой Claude токен, чтобы продолжить без лимита.",
          "limit_reached": True}, status_code=402)
 
@@ -209,11 +256,12 @@ async def auth_me(request: Request):
     """Who am I — the SPA calls this on load to decide login screen vs app.
     Includes the daily LLM quota state so the UI can show what's left."""
     user = request.state.user
+    req_limit, tok_limit = _llm_limits(request)
+    used_req, used_tok = _llm_usage_today(request, user["username"])
     return {"username": user["username"], "role": user["role"],
             "has_token": bool(user["api_token"]),
-            "llm_daily_limit": LLM_DAILY_LIMIT,
-            "llm_used_today": _llm_used_today(request, user["username"])
-                              if LLM_DAILY_LIMIT > 0 else 0}
+            "llm_daily_limit": req_limit, "llm_used_today": used_req,
+            "llm_token_limit": tok_limit, "llm_tokens_today": used_tok}
 
 
 @app.post("/api/auth/token")
@@ -340,8 +388,110 @@ async def health():
 
 @app.get("/api/meta")
 async def meta():
-    """Static config the web form needs (environment choices, timezone)."""
-    return {"environments": WEB_ENVIRONMENTS, "tz_offset_hours": TZ_OFFSET_HOURS}
+    """Static config the web form needs (environment choices, timezone,
+    the LLM models offered in the selector and the default one)."""
+    return {"environments": WEB_ENVIRONMENTS, "tz_offset_hours": TZ_OFFSET_HOURS,
+            "models": WEB_LLM_MODELS, "default_model": ANTHROPIC_MODEL}
+
+
+# --- runtime settings (admin only, enforced by the middleware) ---------------
+
+def _settings_payload(request: Request):
+    s = request.app.state.settings
+    return {"system_prompt": s.get("system_prompt") or "",
+            "llm_daily_requests": s.get_int("llm_daily_requests", LLM_DAILY_LIMIT),
+            "llm_daily_tokens": s.get_int("llm_daily_tokens", LLM_DAILY_TOKENS)}
+
+
+@app.get("/api/settings")
+async def settings_get(request: Request):
+    """Runtime settings: the general system prompt (prepended to every web
+    analysis) and the daily shared-token limits (0 = off)."""
+    return _settings_payload(request)
+
+
+@app.put("/api/settings")
+async def settings_put(request: Request):
+    """Edit settings: {system_prompt?, llm_daily_requests?, llm_daily_tokens?}
+    — omitted fields keep their value; an empty system_prompt clears it."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    s = request.app.state.settings
+    if "system_prompt" in body:
+        s.set("system_prompt", (body.get("system_prompt") or "").strip() or None)
+    for key in ("llm_daily_requests", "llm_daily_tokens"):
+        if key in body:
+            try:
+                value = int(body[key])
+            except (TypeError, ValueError):
+                return JSONResponse({"error": f"{key}: нужно число"},
+                                    status_code=422)
+            if value < 0:
+                return JSONResponse({"error": f"{key}: не меньше 0"},
+                                    status_code=422)
+            s.set(key, value)
+    return _settings_payload(request)
+
+
+# --- prepared prompts (reads open to all users; writes admin-only) -----------
+
+@app.get("/api/prompts")
+async def prompts_list(request: Request):
+    """Prepared prompts for the investigation form: roles (who the answer is
+    for) and problem templates (prefill the description)."""
+    p = request.app.state.prompts
+    return {"roles": p.list("role"), "problems": p.list("problem")}
+
+
+@app.post("/api/prompts")
+async def prompts_create(request: Request):
+    """Create a preset: {kind: role|problem, name, text}."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    kind = body.get("kind")
+    name = (body.get("name") or "").strip()
+    text = (body.get("text") or "").strip()
+    if kind not in KINDS:
+        return JSONResponse({"error": f"kind: {' | '.join(KINDS)}"},
+                            status_code=422)
+    if not name or not text:
+        return JSONResponse({"error": "нужны название и текст"}, status_code=422)
+    return request.app.state.prompts.create(kind, name, text)
+
+
+@app.put("/api/prompts/{pid}")
+async def prompts_update(pid: int, request: Request):
+    """Edit a preset: {name?, text?} — omitted field keeps its value."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    name = body.get("name")
+    if name is not None and not name.strip():
+        return JSONResponse({"error": "название не может быть пустым"},
+                            status_code=422)
+    text = body.get("text")
+    if text is not None and not text.strip():
+        return JSONResponse({"error": "текст не может быть пустым"},
+                            status_code=422)
+    row = request.app.state.prompts.update(
+        pid, name=name.strip() if name is not None else None,
+        text=text.strip() if text is not None else None)
+    if row is None:
+        return JSONResponse({"error": "промпт не найден"}, status_code=404)
+    return row
+
+
+@app.delete("/api/prompts/{pid}")
+async def prompts_delete(pid: int, request: Request):
+    if request.app.state.prompts.get(pid) is None:
+        return JSONResponse({"error": "промпт не найден"}, status_code=404)
+    request.app.state.prompts.delete(pid)
+    return {"ok": True}
 
 
 @app.post("/api/investigate")
@@ -401,6 +551,9 @@ async def explain_endpoint(request: Request):
     auth_token, own, err = _llm_auth(request)
     if err is not None:
         return err
+    model, audience, system_context, err = _explain_params(request, body)
+    if err is not None:
+        return err
     try:
         rec = await explain(
             sentry_api, gitlab, llm,
@@ -412,7 +565,8 @@ async def explain_endpoint(request: Request):
             date_from=body.get("date_from"),
             date_to=body.get("date_to"),
             environment=body.get("environment"),
-            auth_token=auth_token)
+            auth_token=auth_token, model=model, audience=audience,
+            system_context=system_context)
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     uname = request.state.user["username"]
@@ -454,6 +608,9 @@ async def explain_stream(request: Request):
     auth_token, own, err = _llm_auth(request)
     if err is not None:
         return err
+    model, audience, system_context, err = _explain_params(request, body)
+    if err is not None:
+        return err
 
     async def gen():
         yield _sse({"type": "status", "message": "запускаю анализ…"})
@@ -470,7 +627,8 @@ async def explain_stream(request: Request):
                         date_to=body.get("date_to"),
                         environment=body.get("environment"),
                         on_event=queue.put_nowait,
-                        auth_token=auth_token))
+                        auth_token=auth_token, model=model,
+                        audience=audience, system_context=system_context))
         except Exception as e:
             yield _sse({"type": "error", "error": str(e)[:300]})
             return
@@ -635,6 +793,15 @@ if _WEB_DIR.is_dir():
     app.add_api_route("/admin-web/api/auth/me", auth_me, methods=["GET"])
     app.add_api_route("/admin-web/api/auth/token", auth_set_token,
                       methods=["POST"])
+    app.add_api_route("/admin-web/api/settings", settings_get, methods=["GET"])
+    app.add_api_route("/admin-web/api/settings", settings_put, methods=["PUT"])
+    app.add_api_route("/admin-web/api/prompts", prompts_list, methods=["GET"])
+    app.add_api_route("/admin-web/api/prompts", prompts_create,
+                      methods=["POST"])
+    app.add_api_route("/admin-web/api/prompts/{pid}", prompts_update,
+                      methods=["PUT"])
+    app.add_api_route("/admin-web/api/prompts/{pid}", prompts_delete,
+                      methods=["DELETE"])
     app.add_api_route("/admin-web/api/users", users_list, methods=["GET"])
     app.add_api_route("/admin-web/api/users", users_create, methods=["POST"])
     app.add_api_route("/admin-web/api/users/{uid}", users_update, methods=["PUT"])

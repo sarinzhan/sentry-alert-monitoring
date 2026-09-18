@@ -83,6 +83,14 @@ export async function getMe() {
   return r.json()
 }
 
+// --- prepared prompts (role/problem presets) + runtime settings ---
+export const getPrompts = () => get('prompts')
+export const createPrompt = (body) => post('prompts', body)
+export const savePrompt = (id, body) => req('PUT', `prompts/${id}`, body)
+export const deletePrompt = (id) => req('DELETE', `prompts/${id}`)
+export const getSettings = () => get('settings')
+export const saveSettings = (body) => req('PUT', 'settings', body)
+
 // --- user management (admin) ---
 export const getUsers = () => get('users').then((d) => d.users)
 export const createUser = (body) => post('users', body)

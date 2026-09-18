@@ -44,10 +44,19 @@ class WebRequestsRepo:
 
     def count_shared_since(self, username, since_ts):
         """How many runs the user made on the SHARED token since since_ts —
-        drives the daily quota (LLM_DAILY_LIMIT). Personal-token runs are
-        excluded; pre-migration rows (own_token NULL) count as shared."""
+        drives the daily request quota. Personal-token runs are excluded;
+        pre-migration rows (own_token NULL) count as shared."""
         return self.db.execute(
             "SELECT COUNT(*) FROM web_request WHERE username=? AND at>=?"
+            " AND (own_token IS NULL OR own_token=0)",
+            (username, since_ts)).fetchone()[0]
+
+    def tokens_shared_since(self, username, since_ts):
+        """Total tokens (in+out) the user spent on the SHARED token since
+        since_ts — drives the daily token quota."""
+        return self.db.execute(
+            "SELECT COALESCE(SUM(COALESCE(in_tokens,0)+COALESCE(out_tokens,0)),0)"
+            " FROM web_request WHERE username=? AND at>=?"
             " AND (own_token IS NULL OR own_token=0)",
             (username, since_ts)).fetchone()[0]
 

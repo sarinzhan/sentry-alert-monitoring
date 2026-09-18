@@ -30,10 +30,13 @@ HOST          = os.environ.get("HOST", "0.0.0.0")
 PORT          = int(os.environ.get("PORT", "8080"))
 # Web UI login session lifetime (HttpOnly cookie). Default: 7 days.
 AUTH_SESSION_HOURS = float(os.environ.get("AUTH_SESSION_HOURS", "168"))
-# How many LLM analyses per user per day run on the SHARED token (the one
-# configured below). Past the limit the user must save a personal Claude token
-# (their runs then don't touch the shared quota). 0 = unlimited.
+# Daily per-user quota on the SHARED Claude token: number of analyses and
+# total tokens (in+out). Past either limit the user must save a personal
+# Claude token (their runs then don't touch the shared quota). 0 = unlimited.
+# These env values are only the DEFAULTS — the admin edits the effective
+# limits at runtime on the web settings screen (stored in the DB).
 LLM_DAILY_LIMIT = int(os.environ.get("LLM_DAILY_LIMIT", "10"))
+LLM_DAILY_TOKENS = int(os.environ.get("LLM_DAILY_TOKENS", "0"))
 
 # Sentry API — used to resolve a project's numeric id to its name (error webhooks
 # only carry the id). Reach Sentry internally on the shared docker network so the
@@ -170,6 +173,14 @@ ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
 CLAUDE_CODE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip() or None
 LLM_AUTH_OK        = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
 ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+# Models offered in the web UI selector (comma-separated). ANTHROPIC_MODEL is
+# the default choice and is always included.
+WEB_LLM_MODELS = [m.strip() for m in os.environ.get(
+    "WEB_LLM_MODELS",
+    "claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5-20251001"
+).split(",") if m.strip()]
+if ANTHROPIC_MODEL not in WEB_LLM_MODELS:
+    WEB_LLM_MODELS.insert(0, ANTHROPIC_MODEL)
 # Each LLM call spawns the SDK's `claude` subprocess — cap how many run at once.
 AGENT_MAX_CONCURRENCY = int(os.environ.get("AGENT_MAX_CONCURRENCY", "2"))
 # Agentic analysis (/ai): give the LLM read-only GitLab tools so it can dig
