@@ -34,7 +34,12 @@ export default function InvestigateForm({ onSubmit, onAnalyze, busy, analyzing,
   const [template, setTemplate] = useState('')
 
   useEffect(() => {
-    getMeta().then(setMeta).catch(() => {})
+    getMeta().then((m) => {
+      setMeta(m)
+      // prod is the default environment — most investigations are about it
+      if ((m.environments || []).includes('prod'))
+        setValues((v) => (v.environment ? v : { ...v, environment: 'prod' }))
+    }).catch(() => {})
     getPrompts().then(setPrompts).catch(() => {})
   }, [])
 

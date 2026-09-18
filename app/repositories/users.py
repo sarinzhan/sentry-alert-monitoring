@@ -13,7 +13,7 @@ import time
 ROLES = ("admin", "manager", "user")
 
 COLS = ("id", "username", "password", "role", "created", "last_activity",
-        "api_token")
+        "api_token", "use_own_token")
 
 
 class UsersRepo:
@@ -100,9 +100,18 @@ class UsersRepo:
         return self.get_by_id(uid)
 
     def set_token(self, uid, token):
-        """Save (or clear, with None) the user's personal Claude token."""
-        self.db.execute("UPDATE auth_user SET api_token=? WHERE id=?",
-                        (token, uid))
+        """Save (or clear, with None) the user's personal Claude token.
+        Saving switches analyses onto it right away (that's what the user
+        expects after pasting a token); clearing falls back to the shared one."""
+        self.db.execute(
+            "UPDATE auth_user SET api_token=?, use_own_token=? WHERE id=?",
+            (token, 1 if token else 0, uid))
+        self.db.commit()
+
+    def set_use_own(self, uid, use_own):
+        """Which token the user's analyses run on: 1 — personal, 0 — shared."""
+        self.db.execute("UPDATE auth_user SET use_own_token=? WHERE id=?",
+                        (1 if use_own else 0, uid))
         self.db.commit()
 
     def delete(self, uid):

@@ -10,7 +10,7 @@ import AskPanel from './AskPanel.jsx'
 import Reasoning from './Reasoning.jsx'
 import Login from './Login.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
-import { investigate, explainStream, getMe, logout } from './api.js'
+import { investigate, explainStream, getMe, logout, setTokenMode } from './api.js'
 
 export default function App() {
   // undefined = checking the session, null = show login, object = logged in
@@ -104,6 +104,7 @@ export default function App() {
   // header counters: «1/5 · 341/50 000» — requests and tokens spent today on
   // the shared token (a limit of 0 blocks it, an unset limit is not shown)
   function usageBadge() {
+    if (user.use_own_token) return 'личный токен активен'
     const parts = []
     if (user.llm_daily_limit >= 0)
       parts.push(`${user.llm_used_today}/${user.llm_daily_limit}`)
@@ -111,6 +112,15 @@ export default function App() {
       parts.push(`${(user.llm_tokens_today || 0).toLocaleString('ru')}/${user.llm_token_limit.toLocaleString('ru')}`)
     if (user.has_token) parts.push('личный токен ✓')
     return parts.join(' · ')
+  }
+
+  // switch analyses between the shared token and the saved personal one
+  async function onTokenMode(useOwn) {
+    try {
+      await setTokenMode(useOwn)
+      const u = await getMe()
+      if (u) setUser(u)
+    } catch { /* the badge simply stays as is */ }
   }
 
 
@@ -166,11 +176,32 @@ export default function App() {
         </div>
       </div>
       {showToken && (
-        <TokenPrompt message="Личный Claude токен" allowClear={user.has_token}
-                     onSaved={() => {
-                       setShowToken(false)
-                       getMe().then((u) => u && setUser(u)).catch(() => {})
-                     }} />
+        <>
+          {user.has_token && (
+            <div className="token-prompt">
+              <div className="field wide">
+                <label><b>Каким токеном пользоваться</b></label>
+                <div className="hint">
+                  Общий токен ограничен дневными лимитами; личный — без
+                  ограничений, расход идёт с вашего аккаунта.
+                </div>
+              </div>
+              <div className="actions">
+                <button type="button"
+                        className={!user.use_own_token ? 'tab active' : 'tab'}
+                        onClick={() => onTokenMode(false)}>Общий (с лимитами)</button>
+                <button type="button"
+                        className={user.use_own_token ? 'tab active' : 'tab'}
+                        onClick={() => onTokenMode(true)}>Личный</button>
+              </div>
+            </div>
+          )}
+          <TokenPrompt message="Личный Claude токен" allowClear={user.has_token}
+                       onSaved={() => {
+                         setShowToken(false)
+                         getMe().then((u) => u && setUser(u)).catch(() => {})
+                       }} />
+        </>
       )}
       {/* panels stay mounted and are only hidden, so switching tabs keeps
           their state (form fields, chat, streams); inactive panels are

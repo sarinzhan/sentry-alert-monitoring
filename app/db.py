@@ -201,12 +201,19 @@ class Database:
             )
             """
         )
-        try:
+        for stmt in (
             # personal Claude token (OAuth or API key) — used for the user's
             # analyses once their daily shared-token quota is spent
-            db.execute("ALTER TABLE auth_user ADD COLUMN api_token TEXT")
-        except sqlite3.OperationalError:
-            pass
+            "ALTER TABLE auth_user ADD COLUMN api_token TEXT",
+            # 1 = run analyses on the personal token right away, without
+            # waiting for the shared-token quota to run out (user's choice,
+            # toggled in the web UI token panel)
+            "ALTER TABLE auth_user ADD COLUMN use_own_token INTEGER DEFAULT 0",
+        ):
+            try:
+                db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         # small key-value store: session-signing secret + runtime settings the
         # admin edits in the web UI (system prompt, daily LLM limits)
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")

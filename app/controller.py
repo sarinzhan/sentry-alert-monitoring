@@ -237,9 +237,12 @@ def _explain_params(request, body):
 
 def _llm_auth(request):
     """Which Claude token this analysis runs on. Returns (auth_token, own, err):
-    the shared token (None) while the user's daily quota lasts, then the
-    user's personal token, else a 402 telling the UI to ask for one."""
+    the user's personal token when they opted into it, else the shared token
+    (None) while the user's daily quota lasts, then the personal token as a
+    fallback, else a 402 telling the UI to ask for one."""
     user = request.state.user
+    if user["api_token"] and user["use_own_token"]:
+        return user["api_token"], True, None
     req_limit, tok_limit = _llm_limits(request)
     if req_limit < 0 and tok_limit < 0:            # both unlimited
         return None, False, None
@@ -272,6 +275,7 @@ async def auth_me(request: Request):
     used_req, used_tok = _llm_usage_today(request, user["username"])
     return {"username": user["username"], "role": user["role"],
             "has_token": bool(user["api_token"]),
+            "use_own_token": bool(user["api_token"]) and bool(user["use_own_token"]),
             "llm_daily_limit": req_limit, "llm_used_today": used_req,
             "llm_token_limit": tok_limit, "llm_tokens_today": used_tok}
 
@@ -287,7 +291,24 @@ async def auth_set_token(request: Request):
     token = (body.get("token") or "").strip() or None
     user = request.state.user
     request.app.state.users.set_token(user["id"], token)
-    return {"has_token": bool(token)}
+    return {"has_token": bool(token), "use_own_token": bool(token)}
+
+
+@app.post("/api/auth/token/mode")
+async def auth_token_mode(request: Request):
+    """Switch the caller's analyses between the shared token and their
+    personal one: {use_own: bool}. Needs a saved personal token to enable."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    use_own = bool(body.get("use_own"))
+    user = request.state.user
+    if use_own and not user["api_token"]:
+        return JSONResponse(
+            {"error": "Сначала сохраните личный Claude токен."}, status_code=422)
+    request.app.state.users.set_use_own(user["id"], use_own)
+    return {"use_own_token": use_own}
 
 
 # --- user management (admin only, enforced by the middleware) ---------------

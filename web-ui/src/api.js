@@ -80,6 +80,8 @@ export const login = (username, password) => post('auth/login', { username, pass
 export const logout = () => post('auth/logout', {})
 // personal Claude token (used automatically after the daily quota); '' clears
 export const setToken = (token) => post('auth/token', { token })
+// which token analyses run on: true — personal, false — shared (with limits)
+export const setTokenMode = (useOwn) => post('auth/token/mode', { use_own: useOwn })
 // null = not logged in (the only 401 that is a normal answer, not an error)
 export async function getMe() {
   const r = await fetch(`${BASE}api/auth/me`)
