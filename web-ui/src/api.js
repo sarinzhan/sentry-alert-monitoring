@@ -70,6 +70,15 @@ export const explainStream = (body, onEvent) =>
 // free-form question (manager/admin): system prompt + question only
 export const askStream = (body, onEvent) => stream('ask/stream', body, onEvent)
 
+// --- LLM chat (manager/admin): one conversation = one resumed SDK session,
+// so the model keeps the whole exchange in context between messages ---
+export const getChats = () => get('chats').then((d) => d.chats)
+export const getChat = (id) => get(`chats/${id}`)
+export const deleteChat = (id) => req('DELETE', `chats/${id}`)
+// {question, chat_id?, model?}; the done event carries chat_id
+export const chatMessageStream = (body, onEvent) =>
+  stream('chats/message', body, onEvent)
+
 export const getHistory = () => get('history').then((d) => d.requests)
 export const getProjects = () => get('projects').then((d) => d.projects)
 export const saveProject = (id, body) =>

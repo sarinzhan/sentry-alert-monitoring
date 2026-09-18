@@ -116,4 +116,36 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 .preset-head input { max-width: 280px; }
 .preset.add { border-top: 1px dashed #333846; }
 .settings-block h2 { margin-top: 0; }
-@media (max-width: 720px) { form { grid-template-columns: 1fr; } }
+/* LLM chat («Вопрос LLM» tab) */
+.chat-layout { display: flex; gap: 16px; align-items: flex-start; }
+.chat-list { width: 220px; flex: none; display: flex; flex-direction: column; gap: 6px; }
+.chat-list .new-chat { text-align: center; }
+.chat-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+  border: 1px solid #2a2e38; border-radius: 6px; cursor: pointer;
+  color: #a8adbb; font-size: 13px;
+}
+.chat-item:hover { background: #1c1f26; color: #e4e6eb; }
+.chat-item.active { border-color: #3d5fb8; color: #e4e6eb; }
+.chat-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-del {
+  background: transparent; color: #6d7382; border: 0; padding: 0 2px;
+  font-size: 12px; font-weight: 400;
+}
+.chat-del:hover { background: transparent; color: #e0745c; }
+.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.chat-messages { display: flex; flex-direction: column; gap: 10px; }
+.bubble { border-radius: 10px; padding: 10px 14px; max-width: 92%; }
+.bubble.user { align-self: flex-end; background: #26324e; border: 1px solid #3d5fb8; }
+.bubble.assistant { align-self: flex-start; background: #1c2620; border: 1px solid #2e4636; }
+.bubble-text { white-space: pre-wrap; word-break: break-word; }
+.bubble .hint { margin-top: 8px; }
+.bubble .reasoning { margin-top: 8px; }
+.chat-input { grid-template-columns: 1fr; padding: 12px; }
+.chat-controls { display: flex; gap: 10px; justify-content: flex-end; }
+.chat-controls select { width: auto; }
+@media (max-width: 720px) {
+  form { grid-template-columns: 1fr; }
+  .chat-layout { flex-direction: column; }
+  .chat-list { width: 100%; }
+}

@@ -31,6 +31,7 @@ from app.repositories.rules import RulesRepo
 from app.repositories.chat_state import ChatStateRepo
 from app.repositories.keywords import KeywordsRepo
 from app.repositories.usermap import UserMapRepo
+from app.repositories.chats import ChatsRepo
 from app.repositories.context import ContextRepo
 from app.repositories.knowledge import KnowledgeRepo
 from app.repositories.llm_audit import LlmAuditRepo
@@ -72,6 +73,7 @@ async def lifespan(app: FastAPI):
     projects = ProjectsRepo(db.conn)
     web_requests = WebRequestsRepo(db.conn)
     users = UsersRepo(db.conn)            # seeds admin/admin on a fresh DB
+    chats = ChatsRepo(db.conn)            # web-chat conversations («Вопрос LLM»)
     settings = SettingsRepo(db.conn)      # runtime settings (limits, sys prompt)
     prompts = PromptsRepo(db.conn)        # role/problem presets, seeds defaults
 
@@ -114,6 +116,7 @@ async def lifespan(app: FastAPI):
     app.state.prompts = prompts
     app.state.services = (sentry_api, gitlab, llm)
     app.state.knowledge = knowledge
+    app.state.chats = chats
 
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
@@ -137,7 +140,7 @@ app = FastAPI(lifespan=lifespan)
 # project catalog (/api/projects*), runtime settings (/api/settings) and
 # prompt-preset edits; manager — investigation + history + prompt-preset edits
 # (writes to /api/prompts — reads are open, the form needs them) + free-form
-# LLM questions (/api/ask*); user — investigation + history only.
+# LLM questions (/api/ask*, /api/chats*); user — investigation + history only.
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
 _ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings")
@@ -163,7 +166,7 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"error": "нужны права администратора"},
                                 status_code=403)
         if (role not in ("admin", "manager")
-                and (rel.startswith("/api/ask")
+                and (rel.startswith(("/api/ask", "/api/chats"))
                      or (rel.startswith("/api/prompts")
                          and request.method != "GET"))):
             return JSONResponse({"error": "нужны права менеджера"},
@@ -634,11 +637,14 @@ def _sse(ev):
     return f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
 
 
-def _stream_llm(request, body, uname, own, label, make_task):
-    """Shared SSE runner for /api/explain/stream and /api/ask/stream: pumps
-    the model's live events, then persists the run (web_requests + llm_audit
-    under `label`) and emits the final done/error event. make_task(on_event)
-    returns the LLM coroutine to run; body is what lands in the history."""
+def _stream_llm(request, body, uname, own, label, make_task, on_done=None):
+    """Shared SSE runner for /api/explain/stream, /api/ask/stream and
+    /api/chats/message: pumps the model's live events, then persists the run
+    (web_requests + llm_audit under `label`) and emits the final done/error
+    event. make_task(on_event) returns the LLM coroutine to run; body is what
+    lands in the history. on_done(rec, llm_id), if given, runs after
+    persistence and returns extra fields merged into the done event (the chat
+    endpoint stores the assistant message + session id there)."""
     llm_audit = request.app.state.llm_audit
     web_requests = request.app.state.web_requests
 
@@ -679,9 +685,16 @@ def _stream_llm(request, body, uname, own, label, make_task):
             llm_id = llm_audit.put(label, rec)
             web_requests.add(body, rec=rec, llm_id=llm_id, username=uname,
                              own_token=own)
+            extra = {}
+            if on_done is not None:
+                try:
+                    extra = on_done(rec, llm_id) or {}
+                except Exception as e:
+                    log.warning("stream on_done failed: %s", e)
             yield _sse({"type": "done", "explanation": rec.text,
                         "llm_id": llm_id, "in_tokens": rec.in_tokens,
-                        "out_tokens": rec.out_tokens, "cost": rec.cost})
+                        "out_tokens": rec.out_tokens, "cost": rec.cost,
+                        **extra})
         finally:
             task.cancel()                      # client gone -> stop the LLM run
 
@@ -765,6 +778,90 @@ async def ask_stream(request: Request):
             sentry_api, gitlab, llm, question=question, on_event=on_event,
             auth_token=auth_token, model=model, system_context=system_context,
             knowledge=request.app.state.knowledge))
+
+
+@app.get("/api/chats")
+async def chats_list(request: Request):
+    """The user's chat conversations, newest first (manager/admin)."""
+    return {"chats": request.app.state.chats.list_for(
+        request.state.user["username"])}
+
+
+@app.post("/api/chats/message")
+async def chats_message(request: Request):
+    """One chat turn (SSE): body {question, chat_id?, model?}. Without chat_id
+    a new conversation is created (its title = the question); with one, the
+    model RESUMES the SDK session and keeps the whole prior exchange in
+    context — its own earlier tool calls and results included. The final done
+    event carries chat_id so the UI binds follow-ups to the conversation.
+    Each turn is audited (web-chat) and counts against the daily quota like
+    any other run."""
+    from app.services.investigation import ask
+    sentry_api, gitlab, llm = request.app.state.services
+    if not llm.enabled:
+        return JSONResponse({"error": "LLM выключен (ENABLE_LLM=false)."},
+                            status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    question = (body.get("question") or "").strip()
+    if not question:
+        return JSONResponse({"error": "вопрос обязателен"}, status_code=422)
+    model = (body.get("model") or "").strip() or None
+    if model and model not in WEB_LLM_MODELS:
+        return JSONResponse({"error": f"модель {model!r} не поддерживается"},
+                            status_code=422)
+    uname = request.state.user["username"]
+    auth_token, own, err = _llm_auth(request)
+    if err is not None:
+        return err
+    chats = request.app.state.chats
+    conv = None
+    if body.get("chat_id"):
+        conv = chats.get(body["chat_id"], uname)
+        if conv is None:
+            return JSONResponse({"error": "чат не найден"}, status_code=404)
+    if conv is None:
+        conv = {"id": chats.create(uname, question), "session_id": None}
+    resume = conv.get("session_id")
+    chats.add_message(conv["id"], "user", question)
+    system_context = request.app.state.settings.get("system_prompt")
+
+    def on_done(rec, llm_id):
+        if rec.session_id:
+            chats.set_session(conv["id"], rec.session_id)
+        chats.add_message(conv["id"], "assistant", rec.text, llm_id=llm_id)
+        return {"chat_id": conv["id"]}
+
+    return _stream_llm(
+        request, {"description": question}, uname, own, "web-chat",
+        lambda on_event: ask(
+            sentry_api, gitlab, llm, question=question, on_event=on_event,
+            auth_token=auth_token, model=model, system_context=system_context,
+            knowledge=request.app.state.knowledge, resume=resume),
+        on_done=on_done)
+
+
+@app.get("/api/chats/{conv_id}")
+async def chats_get(request: Request, conv_id: int):
+    """One conversation with its messages, for rendering the chat."""
+    chats = request.app.state.chats
+    conv = chats.get(conv_id, request.state.user["username"])
+    if conv is None:
+        return JSONResponse({"error": "чат не найден"}, status_code=404)
+    return {"id": conv["id"], "title": conv["title"],
+            "messages": chats.messages(conv_id)}
+
+
+@app.delete("/api/chats/{conv_id}")
+async def chats_delete(request: Request, conv_id: int):
+    """Delete a conversation. The SDK session transcript stays on disk (it's
+    just a file under $HOME/.claude) but is never resumed again."""
+    n = request.app.state.chats.delete(conv_id, request.state.user["username"])
+    if not n:
+        return JSONResponse({"error": "чат не найден"}, status_code=404)
+    return {"deleted": conv_id}
 
 
 @app.get("/api/history")

@@ -1,27 +1,72 @@
-import { useEffect, useState } from 'react'
-import { askStream, getMeta } from './api.js'
+import { useEffect, useRef, useState } from 'react'
+import { getMeta, getChats, getChat, deleteChat, chatMessageStream } from './api.js'
 import Reasoning from './Reasoning.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
 
-// Free-form question to the LLM — manager and admin only. Only the admin
-// system prompt + the question are sent: no investigation template, no role
-// presets. The model keeps its Sentry/GitLab tools, so it can look things up
-// («к каким проектам у тебя есть доступ?»).
+// Chat with the LLM — manager and admin only. Every conversation is one SDK
+// session resumed on each follow-up, so the model remembers the whole
+// exchange, its own earlier tool calls included. The Sentry/GitLab/notes
+// tools stay attached on every turn.
 export default function AskPanel({ onQuota }) {
+  const [chats, setChats] = useState([])
+  const [chatId, setChatId] = useState(null)      // null = new chat
+  const [messages, setMessages] = useState([])
   const [question, setQuestion] = useState('')
   const [model, setModel] = useState('')
   const [meta, setMeta] = useState({ models: [], default_model: '' })
   const [busy, setBusy] = useState(false)
   const [steps, setSteps] = useState([])
   const [usage, setUsage] = useState(null)
-  const [answer, setAnswer] = useState(null)
   const [error, setError] = useState('')
   const [limitMsg, setLimitMsg] = useState(null)
   const [lastQuestion, setLastQuestion] = useState(null)
+  const endRef = useRef(null)
 
   useEffect(() => { getMeta().then(setMeta).catch(() => {}) }, [])
+  useEffect(() => { refreshChats() }, [])
+  useEffect(() => { endRef.current?.scrollIntoView({ block: 'nearest' }) },
+            [messages, steps])
 
-  async function run(q) {
+  function refreshChats() {
+    getChats().then(setChats).catch(() => {})
+  }
+
+  function newChat() {
+    if (busy) return
+    setChatId(null)
+    setMessages([])
+    setSteps([])
+    setError('')
+    setLimitMsg(null)
+  }
+
+  async function selectChat(id) {
+    if (busy || id === chatId) return
+    setError('')
+    setLimitMsg(null)
+    setSteps([])
+    try {
+      const c = await getChat(id)
+      setChatId(c.id)
+      setMessages(c.messages)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  async function removeChat(e, id) {
+    e.stopPropagation()
+    if (busy || !window.confirm('Удалить этот чат?')) return
+    try {
+      await deleteChat(id)
+      if (id === chatId) newChat()
+      refreshChats()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function run(q, isRetry = false) {
     if (busy || !q) return
     setLastQuestion(q)
     setBusy(true)
@@ -29,16 +74,26 @@ export default function AskPanel({ onQuota }) {
     setLimitMsg(null)
     setSteps([])
     setUsage(null)
-    setAnswer(null)
+    if (!isRetry) setMessages((m) => [...m, { role: 'user', text: q }])
+    let runSteps = []
     try {
-      await askStream({ question: q, model: model || undefined }, (ev) => {
-        if (ev.type === 'done') {
-          setAnswer(ev)
-          if (ev.in_tokens != null) setUsage({ in_tokens: ev.in_tokens, out_tokens: ev.out_tokens })
-        } else if (ev.type === 'error') setError(ev.error)
-        else if (ev.type === 'usage') setUsage(ev)
-        else setSteps((s) => [...s, ev])
-      })
+      await chatMessageStream(
+        { question: q, chat_id: chatId || undefined, model: model || undefined },
+        (ev) => {
+          if (ev.type === 'done') {
+            setChatId(ev.chat_id)
+            setMessages((m) => [...m, {
+              role: 'assistant', text: ev.explanation, llm_id: ev.llm_id,
+              in_tokens: ev.in_tokens, out_tokens: ev.out_tokens,
+              cost: ev.cost, steps: runSteps,
+            }])
+            setSteps([])
+            refreshChats()
+          } else if (ev.type === 'error') setError(ev.error)
+          else if (ev.type === 'usage') setUsage(ev)
+          else { runSteps = [...runSteps, ev]; setSteps(runSteps) }
+        })
+      setQuestion('')
     } catch (e) {
       if (e.limitReached) setLimitMsg(e.message)
       else setError(e.message)
@@ -53,55 +108,87 @@ export default function AskPanel({ onQuota }) {
     run(question.trim())
   }
 
+  function onKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      run(question.trim())
+    }
+  }
+
   return (
-    <>
-      <form onSubmit={submit} noValidate>
-        <div className="field wide">
-          <label htmlFor="question"><b>Вопрос</b> <span className="req">*</span></label>
-          <textarea id="question" value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    placeholder="Например: к каким проектам и инструментам у тебя есть доступ?" />
-          <span className="hint">
-            Свободный вопрос: модель получает только общий системный промпт и
-            ваш текст — без шаблонов расследования и ролей ответа. Инструменты
-            Sentry и GitLab ей доступны.
-          </span>
-        </div>
-        {meta.models.length > 0 && (
-          <div className="field">
-            <label htmlFor="ask-model">Модель ИИ</label>
-            <select id="ask-model" value={model} onChange={(e) => setModel(e.target.value)}>
-              <option value="">{`по умолчанию (${meta.default_model})`}</option>
-              {meta.models.filter((m) => m !== meta.default_model).map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
+    <div className="chat-layout">
+      <aside className="chat-list">
+        <button type="button" className="tab new-chat"
+                onClick={newChat} disabled={busy}>+ Новый чат</button>
+        {chats.map((c) => (
+          <div key={c.id}
+               className={c.id === chatId ? 'chat-item active' : 'chat-item'}
+               onClick={() => selectChat(c.id)} title={c.title}>
+            <span className="chat-title">{c.title || '(без названия)'}</span>
+            <button type="button" className="chat-del" title="удалить"
+                    onClick={(e) => removeChat(e, c.id)}>✕</button>
           </div>
+        ))}
+        {chats.length === 0 && <div className="hint">Чатов пока нет.</div>}
+      </aside>
+
+      <section className="chat-main">
+        <div className="chat-messages">
+          {messages.length === 0 && !busy && (
+            <div className="empty">
+              Модель помнит весь диалог — задавайте уточняющие вопросы.
+              Инструменты Sentry, GitLab и заметки-память ей доступны.
+            </div>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} className={`bubble ${m.role}`}>
+              <div className="bubble-text">{m.text}</div>
+              {m.role === 'assistant' && (
+                <div className="hint">
+                  анализ ИИ — проверьте выводы{m.llm_id && ` · ${m.llm_id}`}
+                  {m.in_tokens != null &&
+                    ` · токены: ${m.in_tokens.toLocaleString('ru')} вх / ${m.out_tokens.toLocaleString('ru')} исх`}
+                  {m.cost != null && ` · $${m.cost.toFixed(4)}`}
+                </div>
+              )}
+              {m.steps?.length > 0 && (
+                <Reasoning steps={m.steps} running={false} usage={null} />
+              )}
+            </div>
+          ))}
+          {busy && <Reasoning steps={steps} running usage={usage} />}
+          <div ref={endRef} />
+        </div>
+
+        {error && <p className="error">{error}</p>}
+        {limitMsg && (
+          <TokenPrompt message={limitMsg}
+                       onSaved={() => { setLimitMsg(null); run(lastQuestion, true) }} />
         )}
-        <div className="actions">
-          <button type="submit" disabled={busy || !question.trim()}>
-            {busy ? 'Спрашиваю…' : '🤖 Спросить'}
-          </button>
-        </div>
-      </form>
-      {error && <p className="error">{error}</p>}
-      {limitMsg && (
-        <TokenPrompt message={limitMsg}
-                     onSaved={() => { setLimitMsg(null); run(lastQuestion) }} />
-      )}
-      <Reasoning steps={steps} running={busy} usage={usage} />
-      {answer && (
-        <div className="explanation">
-          <h2>Ответ</h2>
-          <div className="explanation-text">{answer.explanation}</div>
-          <div className="hint">
-            анализ ИИ — проверьте выводы · {answer.llm_id}
-            {answer.in_tokens != null &&
-              ` · токены: ${answer.in_tokens.toLocaleString('ru')} вх / ${answer.out_tokens.toLocaleString('ru')} исх`}
-            {answer.cost != null && ` · $${answer.cost.toFixed(4)}`}
+
+        <form className="chat-input" onSubmit={submit} noValidate>
+          <textarea value={question} rows={2}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    onKeyDown={onKey}
+                    placeholder={chatId
+                      ? 'Уточняющий вопрос… (Enter — отправить, Shift+Enter — новая строка)'
+                      : 'Например: к каким проектам и инструментам у тебя есть доступ?'} />
+          <div className="chat-controls">
+            {meta.models.length > 0 && (
+              <select value={model} onChange={(e) => setModel(e.target.value)}
+                      title="Модель ИИ">
+                <option value="">{`по умолчанию (${meta.default_model})`}</option>
+                {meta.models.filter((m) => m !== meta.default_model).map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            )}
+            <button type="submit" disabled={busy || !question.trim()}>
+              {busy ? 'Думаю…' : 'Отправить'}
+            </button>
           </div>
-        </div>
-      )}
-    </>
+        </form>
+      </section>
+    </div>
   )
 }

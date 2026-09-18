@@ -252,6 +252,30 @@ class Database:
             " name TEXT NOT NULL, text TEXT NOT NULL, updated REAL NOT NULL)"
         )
 
+        # web chat («Вопрос LLM» tab): one conversation = one SDK session that
+        # is resumed on every follow-up message, so the model keeps the full
+        # context (its own earlier tool calls included). Messages are stored
+        # only for rendering the chat — the model's memory is the session
+        # transcript under $HOME/.claude (the persistent volume).
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_conversation (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                username   TEXT NOT NULL,
+                session_id TEXT,
+                title      TEXT,
+                created    REAL NOT NULL,
+                updated    REAL NOT NULL
+            )
+            """
+        )
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS chat_message ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, conv_id INTEGER NOT NULL,"
+            " role TEXT NOT NULL, text TEXT NOT NULL, llm_id TEXT, at REAL NOT NULL)"
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_chat_message ON chat_message(conv_id, at)")
+
         # --- multi-chat: subscriptions, per-chat rules, per (chat, issue) send state ---
         db.execute(
             "CREATE TABLE IF NOT EXISTS chat_subscription ("

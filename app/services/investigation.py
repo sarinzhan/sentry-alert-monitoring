@@ -245,14 +245,19 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
 
 
 async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
-              model=None, system_context=None, knowledge=None):
+              model=None, system_context=None, knowledge=None, resume=None):
     """Free-form question to the LLM (the web «Вопрос» tab, manager/admin
     only). Unlike explain(), NO investigation template, no role preset and no
     answer-style section are added — the prompt is just the admin system
     context + the user's question verbatim. The same read-only Sentry/GitLab
     tools are attached when configured, so the model can look things up
     (e.g. «к каким проектам у тебя есть доступ?»). Returns the LlmCall
-    record, or None on LLM failure."""
+    record, or None on LLM failure.
+
+    resume continues an earlier exchange (the web chat): the session already
+    contains the system context and the notes instruction, so only the new
+    question is sent — the tools are re-attached (they live per process, not
+    in the session)."""
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import build_sentry_server
     from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
@@ -277,10 +282,13 @@ async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
             notes = NOTES_PROMPT
 
     system_context = (system_context or "").strip()
-    prompt = (
-        (f"About the system (context provided by the administrator):\n"
-         f"{system_context}\n\n" if system_context else "")
-        + question + notes)
+    if resume:
+        prompt = question
+    else:
+        prompt = (
+            (f"About the system (context provided by the administrator):\n"
+             f"{system_context}\n\n" if system_context else "")
+            + question + notes)
     return await llm.complete(prompt, mcp_servers=servers or None,
                               allowed_tools=allowed or None, on_event=on_event,
-                              auth_token=auth_token, model=model)
+                              auth_token=auth_token, model=model, resume=resume)

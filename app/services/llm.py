@@ -53,6 +53,7 @@ class LlmCall:
     prompt: str = ""
     tools_offered: list = field(default_factory=list)
     tool_calls: list = field(default_factory=list)   # [{tool, args, result}]
+    session_id: str = None        # SDK session — pass as resume= to continue it
 
 
 def _emit(on_event, ev):
@@ -135,7 +136,7 @@ class LlmClient:
         return self._enabled
 
     async def complete(self, prompt: str, mcp_servers=None, allowed_tools=None,
-                       on_event=None, auth_token=None, model=None):
+                       on_event=None, auth_token=None, model=None, resume=None):
         """Send one prompt. Returns an LlmCall record, or None on failure.
         With mcp_servers set, runs an agentic loop (up to AGENT_MAX_TURNS turns)
         where the model may call those tools; otherwise a single completion.
@@ -152,7 +153,12 @@ class LlmClient:
         auth_token, if given, is the user's PERSONAL Claude token (OAuth or
         API key) — this call runs on it instead of the shared credential
         (the web daily-quota overflow path). model overrides ANTHROPIC_MODEL
-        for this call (the web UI model selector)."""
+        for this call (the web UI model selector).
+
+        resume continues an earlier conversation: pass the session_id from a
+        previous LlmCall and the model sees that whole exchange — its own
+        prior tool calls and results included (the web chat). Session
+        transcripts live under $HOME/.claude (the persistent volume)."""
         if not self._enabled:
             return None
         agentic = bool(mcp_servers)
@@ -167,6 +173,7 @@ class LlmClient:
             permission_mode="bypassPermissions",  # headless; nothing to permit anyway
             setting_sources=[],                   # don't load CLAUDE.md/skills from disk
             env=_sdk_env(auth_token),
+            resume=resume,
         )
         rec = LlmCall(model=model,
                       auth=(mode or "") + ("/personal" if auth_token else ""),
@@ -216,6 +223,7 @@ class LlmClient:
                         rec.out_tokens = usage.get("output_tokens", 0) or 0
                         rec.cost = message.total_cost_usd
                         rec.turns = getattr(message, "num_turns", 0) or 0
+                        rec.session_id = getattr(message, "session_id", None)
         except Exception as e:
             log.warning("LLM call failed: %s", e)
             return None

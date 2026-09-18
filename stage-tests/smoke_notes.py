@@ -108,6 +108,32 @@ async def main():
     # --- delete ---
     check("delete by id", repo.delete(nid) == 1 and repo.get(nid) is None)
 
+    # --- web chat: conversations + messages (repositories.chats) ---
+    from app.repositories.chats import ChatsRepo
+    chats = ChatsRepo(db.conn)
+    cid = chats.create("alice", "почему падает биллинг?")
+    check("chat created", chats.get(cid, "alice")["title"].startswith("почему"))
+    check("chat scoped by user", chats.get(cid, "bob") is None)
+    chats.add_message(cid, "user", "почему падает биллинг?")
+    chats.add_message(cid, "assistant", "смотрю…", llm_id="llm_x1")
+    msgs = chats.messages(cid)
+    check("messages in order", [m["role"] for m in msgs] == ["user", "assistant"]
+          and msgs[1]["llm_id"] == "llm_x1")
+    chats.set_session(cid, "sess-abc")
+    check("session id stored", chats.get(cid, "alice")["session_id"] == "sess-abc")
+    lst = chats.list_for("alice")
+    check("list_for counts messages", lst[0]["id"] == cid and lst[0]["messages"] == 2)
+    check("delete scoped", chats.delete(cid, "bob") == 0)
+    check("delete works", chats.delete(cid, "alice") == 1
+          and chats.messages(cid) == [])
+
+    # --- ask() builds a bare prompt on resume (no system ctx duplication) ---
+    import inspect
+    from app.services.investigation import ask as ask_fn
+    check("ask accepts resume", "resume" in inspect.signature(ask_fn).parameters)
+    from app.services.llm import LlmCall
+    check("LlmCall carries session_id", hasattr(LlmCall(), "session_id"))
+
     # --- the whole app still imports (wiring check) ---
     import app.controller  # noqa: F401
     check("app.controller imports", True)

@@ -186,6 +186,20 @@ is the non-streaming twin). Slow — nginx in front needs
 `proxy_read_timeout 300s` and `proxy_buffering off` (the host-nginx
 `/admin-web/` location too, or events arrive only at the end).
 
+The **«Вопрос LLM»** tab (manager/admin) is a real chat: every conversation
+is one Claude Agent SDK **session**, resumed on each follow-up message, so the
+model remembers the whole exchange — including its own earlier tool calls and
+their results («а покажи код этого метода» just works). Conversations are
+per-user (list, switch, delete — «Новый чат» starts a fresh session); the
+Sentry/GitLab/notes tools stay attached on every turn, each turn is audited
+(`web-chat`) and counts against the same daily quota. Session transcripts
+live under `$HOME/.claude` on the persistent volume, so chats survive
+restarts; messages are mirrored in the `chat_conversation`/`chat_message`
+tables for rendering. Mind that a resumed session re-sends the prior context
+each turn, so very long chats cost more per message — start a new chat when
+the topic changes. Backend: `GET/DELETE /api/chats[/{id}]`,
+`POST /api/chats/message` (SSE).
+
 The UI lives in `web-ui/` (React + Vite) and runs as its own container:
 `web-ui/Dockerfile` builds the React app in a Node stage, then nginx serves
 the static files and forwards the api calls to `sentry-telegram` over the
