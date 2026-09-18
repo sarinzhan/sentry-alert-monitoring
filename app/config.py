@@ -211,6 +211,16 @@ ANTHROPIC_CA_BUNDLE = os.environ.get("ANTHROPIC_CA_BUNDLE", "").strip()
 if ANTHROPIC_CA_BUNDLE == "-":
     ANTHROPIC_CA_BUNDLE = ""
 
+# --- notes memory (semantic search over the LLM's saved notes) ---
+# Multilingual embedding model (fastembed/ONNX) — notes are mixed Russian and
+# English. Downloaded from HuggingFace on first use and cached next to the
+# SQLite db (the persistent volume), so it survives container restarts. If the
+# download fails (proxy), notes search silently falls back to keyword matching.
+EMBED_MODEL = os.environ.get(
+    "EMBED_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+EMBED_CACHE = os.environ.get("EMBED_CACHE", "").strip() or os.path.join(
+    os.path.dirname(DB_PATH) or ".", "fastembed")
+
 
 # The global defaults every chat inherits until it overrides a value with /set.
 # Per-chat overrides live in the DB (see repositories.rules.RulesRepo).

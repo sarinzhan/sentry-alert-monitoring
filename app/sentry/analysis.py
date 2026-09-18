@@ -10,18 +10,21 @@ the pipeline keeps the cheaper one-shot prompt.
 from app.config import ENABLE_LLM_TOOLS, GITLAB_REF, log
 from app.services.gitlab_tools import build_gitlab_server
 from app.services.sentry_tools import build_sentry_server
+from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
 from app.services.llm import money
 from app.utils import esc
 
 
 class AnalysisService:
-    def __init__(self, issues, context, gitlab, llm, sentry, audit=None):
+    def __init__(self, issues, context, gitlab, llm, sentry, audit=None,
+                 knowledge=None):
         self._issues = issues      # IssuesRepo (resolve_ref)
         self._context = context    # ContextRepo (ctx + analysis cache)
         self._gitlab = gitlab      # GitLabClient
         self._llm = llm            # LlmClient
         self._sentry = sentry      # SentryApiClient (related_errors tool)
         self._audit = audit        # LlmAuditRepo (per-call audit trail)
+        self._knowledge = knowledge  # KnowledgeService (notes memory tools)
 
     async def analyze(self, p: dict, use_tools: bool = False, chat_id=None):
         """Cause + fix for a parsed event. Returns text, or None if unavailable.
@@ -98,6 +101,11 @@ class AnalysisService:
                     "confident. Keep the final answer in the format above, and "
                     "if the cause is in another service, name that service."
                 )
+            if servers and self._knowledge is not None:
+                s3, a3 = build_knowledge_server(self._knowledge, source="ai")
+                servers.update(s3)
+                allowed = list(allowed) + a3
+                prompt += NOTES_PROMPT
 
         # dump the prompt so you can inspect it (even while ENABLE_LLM is off)
         log.info("LLM prompt preview:\n%s", prompt)

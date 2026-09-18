@@ -14,6 +14,7 @@ from app.config import (
     SENTRY_LOGS_DATASET, log,
 )
 from app.services.gitlab_tools import build_gitlab_server
+from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
 from app.services.sentry_api import discover_error_hint
 from app.services.sentry_tools import (
     build_sentry_server, fmt_event_details, fmt_log_line,
@@ -160,7 +161,7 @@ async def on_why(update, ctx):
         except Exception as e:
             log.warning("event details failed event=%s: %s", ev.get("id"), e)
 
-    servers, allowed = {}, []
+    servers, allowed, notes = {}, [], ""
     if ENABLE_LLM_TOOLS:
         repos = sorted(set(GITLAB_PROJECTS.values()))
         if deps.gitlab.enabled and repos:
@@ -169,6 +170,11 @@ async def on_why(update, ctx):
         if s2:
             servers.update(s2)
             allowed = list(allowed) + a2
+        if deps.knowledge is not None:
+            s3, a3 = build_knowledge_server(deps.knowledge, source="why")
+            servers.update(s3)
+            allowed = list(allowed) + a3
+            notes = NOTES_PROMPT
     log_lines = [fmt_log_line(row, msg_limit=300, stack_limit=400) for row in logs]
     prompt = PROMPT.format(
         msisdn=msisdn, description=description,
@@ -177,7 +183,7 @@ async def on_why(update, ctx):
         events=("\n".join(lines) or "—"), logs=("\n".join(log_lines) or "—"),
         details=("\n---\n".join(details) or "—"),
         repos=", ".join(sorted(set(GITLAB_PROJECTS.values()))) or "нет",
-        ref=GITLAB_REF)
+        ref=GITLAB_REF) + notes
     rec = await deps.llm.complete(prompt, mcp_servers=servers or None,
                                   allowed_tools=allowed or None)
     if rec is None or not rec.text:

@@ -109,6 +109,7 @@ under Telegram's default privacy mode (no BotFather change).
 | `/activity <msisdn> [1\|3\|6]` | the subscriber's error timeline over the last N hours + LLM summary |
 | `/api <path>` | endpoint documentation generated from the GitLab code: curl, contract, behavior |
 | `/llm <id>` | inspect a saved LLM call (prompt, tools used, tokens) by the `llm_…` id under a reply |
+| `/notes [id \| del <id>]` | the LLM's notes memory: list, show, prune what it saved about the system |
 | `/watch add\|del <text> [project]` · `/watched` | keyword force-send (global or per-project) |
 | `/map <vcs_author> @<tg>` · `/map del\|list` | map a commit author to a Telegram handle |
 
@@ -217,6 +218,29 @@ the `llm_call` table, and every LLM-backed reply carries its id
 `GET /api/llm/{id}` returns the complete record as JSON. Cached `/ai` answers
 keep the id of the call that produced them.
 
+## Notes memory (the LLM's own knowledge base)
+
+Every agentic flow (`/ai`, `/why`, web explain/ask) also gets two tools over a
+persistent `knowledge` table: **`search_notes`** and **`save_note`**. At the
+end of an investigation the model saves short **navigation hints** — which
+service logs what, where an endpoint lives, config quirks, known business
+rules (never facts about a specific user/incident) — and at the start of the
+next one it searches them, so hard-won orientation isn't re-discovered (and
+re-paid in tokens) every time. Saving an existing topic updates it, so notes
+converge instead of piling up.
+
+Search is **semantic** (multilingual — Russian and English queries find each
+other): `fastembed`/ONNX with `EMBED_MODEL` (default
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB),
+downloaded from HuggingFace on first use and cached next to the SQLite db.
+The download honors `HTTPS_PROXY` and `ANTHROPIC_CA_BUNDLE`; if it fails, the
+search silently degrades to keyword matching and the vectors are backfilled
+once the model appears.
+
+The notes are model-written, so a wrong one quietly misleads every future
+investigation — **`/notes`** in Telegram lists them, `/notes <id>` shows one,
+`/notes del <id>` prunes.
+
 ## LLM cause/fix + GitLab (optional)
 
 When `ENABLE_LLM=true`, escalating prod alerts get a `🤖 cause / fix` from Anthropic. The
@@ -241,6 +265,7 @@ Copy `.env.example` and fill in. Highlights (see `.env.example` for the full lis
 | `SENTRY_MSISDN_FIELDS` / `SENTRY_REQUEST_ID_FIELDS` | Discover search keys for `/why`,`/activity` / `/req` |
 | `TIMEZONE_OFFSET_HOURS` | local-time offset for times typed in `/why` (default +6) |
 | `ENABLE_LLM` / `ANTHROPIC_*` | LLM cause/fix |
+| `EMBED_MODEL` / `EMBED_CACHE` | notes-memory semantic search: fastembed model + cache dir |
 | `TELEGRAM_CA_BUNDLE` / `TELEGRAM_SSL_INSECURE` | Telegram TLS behind a proxy |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | corporate proxy (runtime) |
 

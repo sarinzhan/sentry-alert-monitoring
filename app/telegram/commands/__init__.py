@@ -13,7 +13,7 @@ from app.config import log
 from app.telegram.commands import (
     start, help as help_cmd, params, subscribe, alerts, rules_set,
     status, ai, ask, projects, watch, usermap, llm_log, request, api_doc,
-    why, activity,
+    why, activity, notes,
 )
 
 # CommandHandler's default filter only covers regular/edited messages; the bot
@@ -34,6 +34,7 @@ _COMMANDS = [
     (["ai"], ai.on_ai),
     (["ask"], ask.on_ask),
     (["llm"], llm_log.on_llm),
+    (["notes"], notes.on_notes),
     (["req", "request"], request.on_req),
     (["api"], api_doc.on_api),
     (["why"], why.on_why),
@@ -63,6 +64,7 @@ _MENU = [
     ("activity", "Хронология ошибок абонента"),
     ("api", "Документация эндпоинта из кода"),
     ("llm", "Детали LLM-вызова по id"),
+    ("notes", "Заметки-память модели"),
     ("watch", "Force-send по ключевому слову"),
     ("watched", "Список ключевых слов"),
     ("map", "Автор коммита → @telegram"),

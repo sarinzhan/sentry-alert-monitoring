@@ -1,0 +1,122 @@
+"""Smoke test for the notes memory (run inside the app image, no network).
+
+Covers: schema, KnowledgeRepo CRUD + keyword fallback, KnowledgeService
+semantic ranking with a stub embedder (real model download is exercised on
+stage, not here), tool server construction, and the full controller import.
+
+    docker run --rm -e DB_PATH=/tmp/t.db -v .../smoke_notes.py:/smoke.py:ro \
+        sentry-monit:notes-test python /smoke.py
+"""
+import asyncio
+import os
+import sys
+
+os.environ.setdefault("DB_PATH", "/tmp/smoke.db")
+
+from app.db import Database
+from app.repositories.knowledge import KnowledgeRepo
+from app.services.embeddings import to_blob, from_blob, cosine
+from app.services.knowledge_tools import (
+    KnowledgeService, build_knowledge_server, NOTES_PROMPT,
+)
+
+failures = []
+
+
+def check(name, cond):
+    print(("ok  " if cond else "FAIL") + f"  {name}")
+    if not cond:
+        failures.append(name)
+
+
+class StubEmbedder:
+    """Deterministic 3-dim 'embeddings': known words map to fixed directions."""
+    AXES = {"billing": (1.0, 0.0, 0.0), "logs": (0.0, 1.0, 0.0),
+            "gitlab": (0.0, 0.0, 1.0)}
+
+    async def embed(self, texts, kind="passage"):
+        out = []
+        for t in texts:
+            v = [0.01, 0.01, 0.01]
+            for w, ax in self.AXES.items():
+                if w in t.lower():
+                    v = [a + b for a, b in zip(v, ax)]
+            out.append(v)
+        return out
+
+
+class DownEmbedder:
+    async def embed(self, texts, kind="passage"):
+        return None
+
+
+async def main():
+    db = Database()
+    repo = KnowledgeRepo(db.conn)
+
+    # --- repo CRUD + upsert ---
+    nid, created = repo.save("Billing errors", "look in billing-service logs",
+                             source="test")
+    check("insert creates", created and nid)
+    nid2, created2 = repo.save("billing ERRORS", "updated content", source="test2")
+    check("upsert by topic is case-insensitive", nid2 == nid and not created2)
+    check("update replaced content",
+          repo.get(nid)["content"] == "updated content")
+    check("get by topic", repo.get("billing errors")["id"] == nid)
+    repo.save("where logs live", "sentry logs dataset, search_logs tool")
+    repo.save("gitlab repos map", "GITLAB_PROJECTS maps sentry id to repo")
+    check("list_all", repo.count() == 3)
+    check("keyword search hits",
+          [r["topic"].lower() for r in repo.search_keyword("billing problem")]
+          == ["billing errors"])
+
+    # --- semantic search via service (stub embedder) ---
+    svc = KnowledgeService(repo, StubEmbedder())
+    # notes above were saved without vectors -> first search must backfill
+    hits = await svc.search("billing charge failed")
+    check("backfill happened", len(repo.vectors()) == 3)
+    check("semantic top hit is billing",
+          hits and hits[0][0]["topic"].lower() == "billing errors")
+    check("semantic scores attached", hits[0][1] is not None)
+
+    # --- keyword fallback when embeddings are down ---
+    svc_down = KnowledgeService(repo, DownEmbedder())
+    hits = await svc_down.search("billing")
+    check("fallback returns keyword hits",
+          hits and hits[0][0]["topic"].lower() == "billing errors"
+          and hits[0][1] is None)
+
+    # --- save through the service embeds ---
+    await svc.save("logs tips", "use search_logs full-text", source="test")
+    check("service save stores vector",
+          repo.get("logs tips")["emb_model"] is not None)
+
+    # --- blob round-trip / cosine sanity ---
+    v = [0.1, -0.5, 3.0]
+    check("blob round-trip", [round(x, 4) for x in from_blob(to_blob(v))]
+          == [round(x, 4) for x in v])
+    check("cosine self is 1", abs(cosine(v, v) - 1.0) < 1e-6)
+
+    # --- tool server builds; tools callable ---
+    servers, allowed = build_knowledge_server(svc, source="smoke")
+    check("server + allowed tools",
+          "notes" in servers and
+          set(allowed) == {"mcp__notes__search_notes", "mcp__notes__save_note"})
+    check("NOTES_PROMPT mentions both tools",
+          "search_notes" in NOTES_PROMPT and "save_note" in NOTES_PROMPT)
+
+    # --- delete ---
+    check("delete by id", repo.delete(nid) == 1 and repo.get(nid) is None)
+
+    # --- the whole app still imports (wiring check) ---
+    import app.controller  # noqa: F401
+    check("app.controller imports", True)
+
+    print()
+    if failures:
+        print(f"{len(failures)} FAILURES: {failures}")
+        sys.exit(1)
+    print("all smoke checks passed")
+
+
+asyncio.run(main())

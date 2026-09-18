@@ -218,6 +218,26 @@ class Database:
         # admin edits in the web UI (system prompt, daily LLM limits)
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
+        # the LLM's persistent notes memory: navigation hints it saves at the
+        # end of investigations (save_note) and searches at the start of the
+        # next one (search_notes). One row per topic — saving an existing topic
+        # updates it. embedding = float32 vector (services.embeddings) for
+        # semantic search; NULL when saved while the model was unavailable.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic     TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                content   TEXT NOT NULL,
+                source    TEXT,
+                embedding BLOB,
+                emb_model TEXT,
+                created   REAL NOT NULL,
+                updated   REAL NOT NULL
+            )
+            """
+        )
+
         # prepared prompts for the web investigation form. kind:
         #   role    — who the LLM answer is written for (client / tester /
         #             support / backend dev); text replaces the answer-style

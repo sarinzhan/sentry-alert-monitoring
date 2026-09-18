@@ -179,16 +179,18 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
                   device_id=None, msisdn=None, period=None, date_from=None,
                   date_to=None, environment=None, on_event=None,
                   auth_token=None, model=None, audience=None,
-                  system_context=None):
+                  system_context=None, knowledge=None):
     """Agentic LLM investigation of a complaint. Returns the LlmCall record,
     or None on LLM failure. Raises ValidationError on bad input. on_event
     streams the model's live progress; auth_token runs the call on the user's
     personal Claude token; model overrides the default model (the web UI
     selector); audience replaces the answer-style section (a role preset:
     client / tester / support / backend); system_context is the admin-written
-    description of the platform, prepended to the prompt."""
+    description of the platform, prepended to the prompt; knowledge (the
+    shared KnowledgeService) attaches the notes memory tools."""
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import build_sentry_server
+    from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
 
     description = (description or "").strip()
     idents = [(kind, (value or "").strip())
@@ -215,6 +217,12 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
         raise ValidationError(
             "анализ недоступен: инструменты LLM выключены (ENABLE_LLM_TOOLS) "
             "или Sentry API не настроен")
+    notes = ""
+    if knowledge is not None:
+        s3, a3 = build_knowledge_server(knowledge, source="explain")
+        servers.update(s3)
+        allowed = list(allowed) + a3
+        notes = NOTES_PROMPT
 
     window_h = (f"last {window['stats_period']}" if "stats_period" in window
                 else f"{window['start']} .. {window['end']} UTC")
@@ -229,7 +237,7 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
     prompt = (
         (f"About the system you are investigating (context provided by the "
          f"administrator):\n{system_context}\n\n" if system_context else "")
-        + core + "\n\n"
+        + core + notes + "\n\n"
         + ((audience or "").strip() or DEFAULT_STYLE))
     return await llm.complete(prompt, mcp_servers=servers,
                               allowed_tools=allowed, on_event=on_event,
@@ -237,7 +245,7 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
 
 
 async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
-              model=None, system_context=None):
+              model=None, system_context=None, knowledge=None):
     """Free-form question to the LLM (the web «Вопрос» tab, manager/admin
     only). Unlike explain(), NO investigation template, no role preset and no
     answer-style section are added — the prompt is just the admin system
@@ -247,12 +255,13 @@ async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
     record, or None on LLM failure."""
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import build_sentry_server
+    from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
 
     question = (question or "").strip()
     if not question:
         raise ValidationError("вопрос обязателен")
 
-    servers, allowed = {}, []
+    servers, allowed, notes = {}, [], ""
     if ENABLE_LLM_TOOLS:
         repos = sorted(set(GITLAB_PROJECTS.values()))
         if gitlab.enabled and repos:
@@ -261,12 +270,17 @@ async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
         if s2:
             servers.update(s2)
             allowed = list(allowed) + a2
+        if knowledge is not None:
+            s3, a3 = build_knowledge_server(knowledge, source="ask")
+            servers.update(s3)
+            allowed = list(allowed) + a3
+            notes = NOTES_PROMPT
 
     system_context = (system_context or "").strip()
     prompt = (
         (f"About the system (context provided by the administrator):\n"
          f"{system_context}\n\n" if system_context else "")
-        + question)
+        + question + notes)
     return await llm.complete(prompt, mcp_servers=servers or None,
                               allowed_tools=allowed or None, on_event=on_event,
                               auth_token=auth_token, model=model)

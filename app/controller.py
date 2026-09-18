@@ -32,6 +32,7 @@ from app.repositories.chat_state import ChatStateRepo
 from app.repositories.keywords import KeywordsRepo
 from app.repositories.usermap import UserMapRepo
 from app.repositories.context import ContextRepo
+from app.repositories.knowledge import KnowledgeRepo
 from app.repositories.llm_audit import LlmAuditRepo
 from app.repositories.projects import ProjectsRepo
 from app.repositories.web_requests import WebRequestsRepo
@@ -42,6 +43,8 @@ from app.services import auth as auth_tokens
 from app.services.sentry_api import SentryApiClient
 from app.services.gitlab import GitLabClient
 from app.services.llm import LlmClient
+from app.services.embeddings import Embedder
+from app.services.knowledge_tools import KnowledgeService
 from app.sentry.decision import Decider
 from app.sentry.analysis import AnalysisService
 from app.sentry.pipeline import EventPipeline
@@ -77,9 +80,12 @@ async def lifespan(app: FastAPI):
     sentry_api.projects = projects        # auto-register projects it discovers
     gitlab = GitLabClient()
     llm = LlmClient()
+    # the LLM's notes memory: navigation hints it saves between investigations
+    knowledge = KnowledgeService(KnowledgeRepo(db.conn), Embedder())
 
     # --- domain ---
-    analysis = AnalysisService(issues, context, gitlab, llm, sentry_api, llm_audit)
+    analysis = AnalysisService(issues, context, gitlab, llm, sentry_api, llm_audit,
+                               knowledge=knowledge)
     decider = Decider(chat_state, issues)
 
     # --- telegram + pipeline (bot.send is the pipeline's sender) ---
@@ -92,7 +98,8 @@ async def lifespan(app: FastAPI):
     deps = Deps(issues=issues, subscriptions=subscriptions, rules=rules,
                 keywords=keywords, usermap=usermap, analysis=analysis,
                 pipeline=pipeline, llm=llm, llm_audit=llm_audit,
-                context=context, sentry=sentry_api, gitlab=gitlab)
+                context=context, sentry=sentry_api, gitlab=gitlab,
+                knowledge=knowledge)
     register_all(bot.app, deps)
 
     app.state.bot = bot
@@ -106,6 +113,7 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.prompts = prompts
     app.state.services = (sentry_api, gitlab, llm)
+    app.state.knowledge = knowledge
 
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
@@ -603,7 +611,8 @@ async def explain_endpoint(request: Request):
             date_to=body.get("date_to"),
             environment=body.get("environment"),
             auth_token=auth_token, model=model, audience=audience,
-            system_context=system_context)
+            system_context=system_context,
+            knowledge=request.app.state.knowledge)
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     uname = request.state.user["username"]
@@ -716,7 +725,8 @@ async def explain_stream(request: Request):
             date_to=body.get("date_to"),
             environment=body.get("environment"),
             on_event=on_event, auth_token=auth_token, model=model,
-            audience=audience, system_context=system_context))
+            audience=audience, system_context=system_context,
+            knowledge=request.app.state.knowledge))
 
 
 @app.post("/api/ask/stream")
@@ -753,7 +763,8 @@ async def ask_stream(request: Request):
         request, {"description": question}, uname, own, "web-ask",
         lambda on_event: ask(
             sentry_api, gitlab, llm, question=question, on_event=on_event,
-            auth_token=auth_token, model=model, system_context=system_context))
+            auth_token=auth_token, model=model, system_context=system_context,
+            knowledge=request.app.state.knowledge))
 
 
 @app.get("/api/history")

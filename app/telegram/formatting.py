@@ -22,6 +22,7 @@ HELP_TEXT = (
     "<code>/activity &lt;msisdn&gt; [1|3|6]</code> — хронология ошибок абонента за N часов\n"
     "<code>/api &lt;путь&gt;</code> — документация эндпоинта из кода (curl, контракт, поведение)\n"
     "<code>/llm &lt;id&gt;</code> — детали LLM-вызова по id (llm_…) из ответа бота\n"
+    "<code>/notes [id | del &lt;id&gt;]</code> — заметки-память модели: смотреть и чистить\n"
     "<code>/watch add|del &lt;текст&gt; [проект]</code> · <code>/watched</code> — force-send по тексту\n"
     "<code>/map &lt;vcs_author&gt; @&lt;tg&gt;</code> · <code>/map del|list</code> — автор коммита → Telegram\n"
     "<b>id</b> — короткий код <code>#abcdef</code> из строки 2 алерта."

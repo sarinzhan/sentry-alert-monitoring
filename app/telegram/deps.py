@@ -20,3 +20,4 @@ class Deps:
     context: object         # ContextRepo (api_doc cache)
     sentry: object          # SentryApiClient (/req, /why, /activity)
     gitlab: object          # GitLabClient (/api docs generation)
+    knowledge: object = None  # KnowledgeService (notes memory: tools + /notes)
