@@ -143,7 +143,7 @@ app = FastAPI(lifespan=lifespan)
 # LLM questions (/api/ask*, /api/chats*); user — investigation + history only.
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
-_ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings")
+_ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings", "/api/sentry")
 _SESSION_COOKIE = "session"
 
 
@@ -862,6 +862,187 @@ async def chats_delete(request: Request, conv_id: int):
     if not n:
         return JSONResponse({"error": "чат не найден"}, status_code=404)
     return {"deleted": conv_id}
+
+
+def _sentry_admin_error(e):
+    """A Sentry org-management call failed — surface the real reason."""
+    import httpx
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        try:
+            detail = e.response.json().get("detail") or e.response.text[:200]
+        except Exception:
+            detail = e.response.text[:200]
+        hint = (" — токену SENTRY_API_TOKEN не хватает прав: в Internal "
+                "Integration включите Project: Write и Member: Admin"
+                if code == 403 else "")
+        return JSONResponse({"error": f"Sentry: {code} {detail}{hint}"},
+                            status_code=502)
+    return JSONResponse({"error": str(e)[:300]}, status_code=502)
+
+
+@app.get("/api/sentry/teams")
+async def sentry_teams(request: Request):
+    """The org's teams — the target for project creation (admin)."""
+    sentry_api = request.app.state.sentry
+    if not sentry_api.enabled:
+        return JSONResponse({"error": "Sentry API не настроен."}, status_code=503)
+    try:
+        return {"teams": await sentry_api.list_teams()}
+    except Exception as e:
+        return _sentry_admin_error(e)
+
+
+@app.post("/api/sentry/projects")
+async def sentry_create_project(request: Request):
+    """Create a project in Sentry (admin): body {team, name}. The new project
+    auto-registers in the local catalog («Проекты»); attach its GitLab repo
+    there afterwards."""
+    sentry_api = request.app.state.sentry
+    if not sentry_api.enabled:
+        return JSONResponse({"error": "Sentry API не настроен."}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    team = (body.get("team") or "").strip()
+    name = (body.get("name") or "").strip()
+    if not team or not name:
+        return JSONResponse({"error": "нужны team и name"}, status_code=422)
+    try:
+        proj = await sentry_api.create_project(team, name)
+    except Exception as e:
+        return _sentry_admin_error(e)
+    log.info("web: sentry project %s created by %s",
+             proj["slug"], request.state.user["username"])
+    return proj
+
+
+@app.post("/api/sentry/members")
+async def sentry_invite_member(request: Request):
+    """Invite a user to the Sentry org (admin): body {email, role, team?}.
+    SMTP is not configured on this Sentry, so the response carries the
+    INVITE LINK — hand it to the person, they set a password by it. If the
+    link is unavailable (older Sentry), fall back to `sentry createuser`."""
+    sentry_api = request.app.state.sentry
+    if not sentry_api.enabled:
+        return JSONResponse({"error": "Sentry API не настроен."}, status_code=503)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    email = (body.get("email") or "").strip()
+    role = (body.get("role") or "member").strip()
+    team = (body.get("team") or "").strip()
+    if not email or "@" not in email:
+        return JSONResponse({"error": "нужен корректный email"}, status_code=422)
+    if role not in ("member", "admin", "manager", "owner"):
+        return JSONResponse({"error": "role: member|admin|manager|owner"},
+                            status_code=422)
+    try:
+        member = await sentry_api.invite_member(
+            email, role=role, teams=[team] if team else None)
+    except Exception as e:
+        return _sentry_admin_error(e)
+    log.info("web: sentry member %s invited by %s (link: %s)",
+             email, request.state.user["username"],
+             "yes" if member.get("invite_link") else "no")
+    return member
+
+
+@app.post("/api/projects/{pid}/audit")
+async def project_audit(request: Request, pid: str):
+    """LLM observability audit of one service (SSE, admin — the middleware
+    gates /api/projects*): is there enough telemetry in Sentry to investigate
+    user complaints about this project? The agent checks the logs dataset,
+    an error event's tags/breadcrumbs and (when mapped) the repo's logging
+    code, then answers with a verdict + concrete recommendations. Stored on
+    the project row (shown in «Проекты»), audited as web-audit."""
+    from app.config import (SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS,
+                            SENTRY_DEVICE_ID_FIELDS, AGENT_MAX_TURNS,
+                            ENABLE_LLM_TOOLS)
+    from app.services.gitlab_tools import build_gitlab_server
+    from app.services.sentry_tools import build_sentry_server
+
+    sentry_api, gitlab, llm = request.app.state.services
+    if not llm.enabled:
+        return JSONResponse({"error": "LLM выключен (ENABLE_LLM=false)."},
+                            status_code=503)
+    projects = request.app.state.projects
+    row = projects.get(pid)
+    if row is None:
+        return JSONResponse({"error": "проект не найден"}, status_code=404)
+    uname = request.state.user["username"]
+    auth_token, own, err = _llm_auth(request)
+    if err is not None:
+        return err
+
+    servers, allowed = {}, []
+    if ENABLE_LLM_TOOLS:
+        s2, a2 = build_sentry_server(sentry_api)
+        if s2:
+            servers.update(s2)
+            allowed = list(allowed) + a2
+        if gitlab.enabled and row["gitlab_repo"]:
+            s1, a1 = build_gitlab_server(gitlab, row["gitlab_repo"])
+            servers.update(s1)
+            allowed = list(allowed) + a1
+    if not servers:
+        return JSONResponse(
+            {"error": "аудит недоступен: инструменты LLM выключены "
+                      "(ENABLE_LLM_TOOLS) или Sentry API не настроен"},
+            status_code=503)
+
+    # ground truth from our own tables: how many issues we've seen for it
+    seen = request.app.state.db.conn.execute(
+        "SELECT COUNT(*), MAX(updated) FROM issue_state WHERE project IN (?, ?, ?)",
+        (row["name"], row["slug"], row["id"])).fetchone()
+    seen_line = (f"{seen[0]} distinct error issues alerted through this bot"
+                 + (f", last at {time.strftime('%Y-%m-%d', time.gmtime(seen[1]))} UTC"
+                    if seen[1] else "")) if seen and seen[0] else \
+        "no error issues have reached this bot yet"
+    label = row["name"] or row["slug"] or row["id"]
+
+    prompt = (
+        "You are auditing the OBSERVABILITY of one backend service: is there "
+        "enough telemetry in Sentry for an engineer (or an LLM agent) to "
+        "investigate user complaints about it?\n\n"
+        f"Service: {label} — sentry project id {row['id']}, slug "
+        f"{row['slug'] or '?'}; GitLab repo: {row['gitlab_repo'] or 'NOT MAPPED'}.\n"
+        f"Known to this bot: {seen_line}.\n\n"
+        "Check with the tools — conclusions must cite what you actually found:\n"
+        "1. Application LOGS: search_logs for this service (try "
+        f"resource.service.name:\"{row['slug'] or label}\" over period '3d', "
+        "then full-text by the service name). Are ordinary operations logged, "
+        "or only errors? Do log lines carry user identifiers — msisdn "
+        f"(configured keys: {', '.join(SENTRY_MSISDN_FIELDS)}), request id "
+        f"({', '.join(SENTRY_REQUEST_ID_FIELDS)}), device id "
+        f"({', '.join(SENTRY_DEVICE_ID_FIELDS)})?\n"
+        "2. ERROR EVENTS: if you find an event id (in logs or via "
+        "find_events on an identifier you saw), call event_details — are "
+        "there identifier tags, breadcrumbs, request context, a trace id?\n"
+        "3. CODE (only if the repo is mapped): search_code for logging in the "
+        "request-handling paths — which important flows log nothing?\n\n"
+        f"Budget: {AGENT_MAX_TURNS} turns — leave room for the answer.\n"
+        "Reply in Russian, plain text, exactly this structure:\n"
+        "Вердикт: достаточно / частично / недостаточно — одно предложение почему\n"
+        "Что есть: что уже логируется и с какими полями\n"
+        "Чего не хватает: конкретные пробелы\n"
+        "Рекомендации: какие поля/строки логов добавить (msisdn, request_id, "
+        "breadcrumbs, trace id…), по пунктам"
+    )
+
+    def on_done(rec, llm_id):
+        projects.set_audit(row["id"], rec.text, llm_id)
+        return {"project_id": row["id"]}
+
+    return _stream_llm(
+        request, {"description": f"аудит логов проекта {label}"}, uname, own,
+        "web-audit",
+        lambda on_event: llm.complete(prompt, mcp_servers=servers,
+                                      allowed_tools=allowed, on_event=on_event,
+                                      auth_token=auth_token),
+        on_done=on_done)
 
 
 @app.get("/api/usage")

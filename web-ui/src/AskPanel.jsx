@@ -5,8 +5,9 @@ import TokenPrompt from './TokenPrompt.jsx'
 
 // Chat with the LLM — manager and admin only. Every conversation is one SDK
 // session resumed on each follow-up, so the model remembers the whole
-// exchange, its own earlier tool calls included. The Sentry/GitLab/notes
-// tools stay attached on every turn.
+// exchange, its own earlier tool calls included. The answer is typed out
+// live (stream deltas); «Стоп» aborts the fetch, which cancels the LLM run
+// server-side.
 export default function AskPanel({ onQuota }) {
   const [chats, setChats] = useState([])
   const [chatId, setChatId] = useState(null)      // null = new chat
@@ -16,16 +17,19 @@ export default function AskPanel({ onQuota }) {
   const [meta, setMeta] = useState({ models: [], default_model: '' })
   const [busy, setBusy] = useState(false)
   const [steps, setSteps] = useState([])
+  const [live, setLive] = useState('')            // text being typed out
   const [usage, setUsage] = useState(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [limitMsg, setLimitMsg] = useState(null)
   const [lastQuestion, setLastQuestion] = useState(null)
+  const abortRef = useRef(null)
   const endRef = useRef(null)
 
   useEffect(() => { getMeta().then(setMeta).catch(() => {}) }, [])
   useEffect(() => { refreshChats() }, [])
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'nearest' }) },
-            [messages, steps])
+            [messages, steps, live])
 
   function refreshChats() {
     getChats().then(setChats).catch(() => {})
@@ -36,15 +40,19 @@ export default function AskPanel({ onQuota }) {
     setChatId(null)
     setMessages([])
     setSteps([])
+    setLive('')
     setError('')
+    setNotice('')
     setLimitMsg(null)
   }
 
   async function selectChat(id) {
     if (busy || id === chatId) return
     setError('')
+    setNotice('')
     setLimitMsg(null)
     setSteps([])
+    setLive('')
     try {
       const c = await getChat(id)
       setChatId(c.id)
@@ -66,15 +74,23 @@ export default function AskPanel({ onQuota }) {
     }
   }
 
+  function stop() {
+    abortRef.current?.abort()
+  }
+
   async function run(q, isRetry = false) {
     if (busy || !q) return
     setLastQuestion(q)
     setBusy(true)
     setError('')
+    setNotice('')
     setLimitMsg(null)
     setSteps([])
+    setLive('')
     setUsage(null)
     if (!isRetry) setMessages((m) => [...m, { role: 'user', text: q }])
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     let runSteps = []
     try {
       await chatMessageStream(
@@ -88,16 +104,24 @@ export default function AskPanel({ onQuota }) {
               cost: ev.cost, steps: runSteps,
             }])
             setSteps([])
+            setLive('')
             refreshChats()
           } else if (ev.type === 'error') setError(ev.error)
           else if (ev.type === 'usage') setUsage(ev)
-          else { runSteps = [...runSteps, ev]; setSteps(runSteps) }
-        })
+          else if (ev.type === 'delta') setLive((t) => t + ev.text)
+          else { runSteps = [...runSteps, ev]; setSteps(runSteps); setLive('') }
+        }, ctrl.signal)
       setQuestion('')
     } catch (e) {
-      if (e.limitReached) setLimitMsg(e.message)
+      if (e.name === 'AbortError') {
+        setNotice('⏹ Остановлено — ответ не сохранён.')
+        setSteps([])
+        setLive('')
+        refreshChats()   // the user message is already stored server-side
+      } else if (e.limitReached) setLimitMsg(e.message)
       else setError(e.message)
     } finally {
+      abortRef.current = null
       setBusy(false)
       onQuota && onQuota()
     }
@@ -156,11 +180,12 @@ export default function AskPanel({ onQuota }) {
               )}
             </div>
           ))}
-          {busy && <Reasoning steps={steps} running usage={usage} />}
+          {busy && <Reasoning steps={steps} running usage={usage} live={live} />}
           <div ref={endRef} />
         </div>
 
         {error && <p className="error">{error}</p>}
+        {notice && <p className="hint">{notice}</p>}
         {limitMsg && (
           <TokenPrompt message={limitMsg}
                        onSaved={() => { setLimitMsg(null); run(lastQuestion, true) }} />
@@ -182,6 +207,9 @@ export default function AskPanel({ onQuota }) {
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
+            )}
+            {busy && (
+              <button type="button" className="stop" onClick={stop}>⏹ Стоп</button>
             )}
             <button type="submit" disabled={busy || !question.trim()}>
               {busy ? 'Думаю…' : 'Отправить'}

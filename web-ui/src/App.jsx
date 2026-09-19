@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import InvestigateForm from './InvestigateForm.jsx'
 import Results from './Results.jsx'
 import ProjectsPanel from './ProjectsPanel.jsx'
@@ -25,9 +25,11 @@ export default function App() {
   const [explaining, setExplaining] = useState(false)
   const [explainError, setExplainError] = useState('')
   const [steps, setSteps] = useState([])
+  const [live, setLive] = useState('')
   const [usage, setUsage] = useState(null)
   const [limitMsg, setLimitMsg] = useState(null)
   const [showToken, setShowToken] = useState(false)
+  const abortRef = useRef(null)
 
   useEffect(() => {
     getMe().then(setUser).catch(() => setUser(null))
@@ -66,21 +68,28 @@ export default function App() {
     setExplainError('')
     setLimitMsg(null)
     setSteps([])
+    setLive('')
     setUsage(null)
     setExplanation(null)
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     try {
       await explainStream(body, (ev) => {
         if (ev.type === 'done') {
           setExplanation(ev)
+          setLive('')
           if (ev.in_tokens != null) setUsage({ in_tokens: ev.in_tokens, out_tokens: ev.out_tokens })
         } else if (ev.type === 'error') setExplainError(ev.error)
         else if (ev.type === 'usage') setUsage(ev)
-        else setSteps((s) => [...s, ev])
-      })
+        else if (ev.type === 'delta') setLive((t) => t + ev.text)
+        else { setSteps((s) => [...s, ev]); setLive('') }
+      }, ctrl.signal)
     } catch (e) {
-      if (e.limitReached) setLimitMsg(e.message)
+      if (e.name === 'AbortError') { setLive(''); setSteps([]) }
+      else if (e.limitReached) setLimitMsg(e.message)
       else setExplainError(e.message)
     } finally {
+      abortRef.current = null
       setExplaining(false)
       getMe().then((u) => u && setUser(u)).catch(() => {})  // refresh quota
     }
@@ -139,6 +148,10 @@ export default function App() {
     <main>
       <div className="topbar">
         <nav className="tabs">
+          <span className="brand">
+            <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" />
+            Себеп
+          </span>
           <button className={view === 'search' ? 'tab active' : 'tab'}
                   onClick={() => setView('search')}>Расследование</button>
           <button className={view === 'history' ? 'tab active' : 'tab'}
@@ -262,7 +275,13 @@ export default function App() {
       )}
       {explainError && <p className="error">{explainError}</p>}
       {limitMsg && <TokenPrompt message={limitMsg} onSaved={onTokenSaved} />}
-      <Reasoning steps={steps} running={explaining} usage={usage} />
+      {explaining && (
+        <div className="explain-bar">
+          <button type="button" className="stop"
+                  onClick={() => abortRef.current?.abort()}>⏹ Остановить</button>
+        </div>
+      )}
+      <Reasoning steps={steps} running={explaining} usage={usage} live={live} />
       {explanation && (
         <div className="explanation">
           <h2>Объяснение</h2>

@@ -116,6 +116,20 @@ td.ts, td.proj { white-space: nowrap; color: #a8adbb; }
 .preset-head input { max-width: 280px; }
 .preset.add { border-top: 1px dashed #333846; }
 .settings-block h2 { margin-top: 0; }
+/* brand */
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700;
+         color: #e4e6eb; margin-right: 10px; font-size: 16px; }
+.brand img { width: 22px; height: 22px; border-radius: 5px; }
+
+/* live reasoning: collapsed to the last step + streamed text */
+.reasoning-head { margin-bottom: 4px; }
+.linkish { background: transparent; border: 0; color: #8fb4e8; padding: 0;
+           font: inherit; font-size: 12px; cursor: pointer; font-weight: 400; }
+.linkish:hover { background: transparent; text-decoration: underline; }
+.step.live { color: #e4e6eb; white-space: pre-wrap; word-break: break-word; }
+button.stop { background: #5a3a34; }
+button.stop:hover { background: #6e463e; }
+
 /* usage stats («Статистика» tab) */
 .usage-controls { display: flex; gap: 16px; align-items: center; margin-bottom: 14px; }
 .usage-controls .tabs { margin-bottom: 0; }

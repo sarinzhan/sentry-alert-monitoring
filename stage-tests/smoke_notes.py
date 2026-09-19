@@ -150,6 +150,23 @@ async def main():
     check("usage: scoped by user",
           wr.usage_by_day("bob", 0, 6)[0]["shared"]["requests"] == 1)
 
+    # --- project audit columns + repo ---
+    from app.repositories.projects import ProjectsRepo
+    pr = ProjectsRepo(db.conn)
+    pr.ensure("42", slug="billing")
+    pr.set_audit("42", "Вердикт: частично", llm_id="llm_z")
+    p = pr.get("42")
+    check("project audit stored",
+          p["audit"].startswith("Вердикт") and p["audit_llm_id"] == "llm_z"
+          and p["audit_at"] is not None)
+    check("audit fields in all()", "audit_at" in pr.all()[0])
+    check("set() keeps audit fields", "audit" in pr.set("42", name="Billing"))
+
+    # --- sentry org-admin client methods exist and are wired ---
+    from app.services.sentry_api import SentryApiClient
+    for meth in ("list_teams", "create_project", "invite_member"):
+        check(f"SentryApiClient.{meth}", callable(getattr(SentryApiClient, meth, None)))
+
     # --- ask() builds a bare prompt on resume (no system ctx duplication) ---
     import inspect
     from app.services.investigation import ask as ask_fn

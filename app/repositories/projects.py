@@ -51,10 +51,24 @@ class ProjectsRepo:
 
     def all(self):
         return [{"id": pid, "slug": slug, "name": name, "gitlab_repo": repo,
-                 "first_seen": first, "updated": updated}
-                for pid, slug, name, repo, first, updated in self.db.execute(
-                    "SELECT id, slug, name, gitlab_repo, first_seen, updated "
+                 "first_seen": first, "updated": updated, "audit": audit,
+                 "audit_at": audit_at, "audit_llm_id": audit_llm_id}
+                for pid, slug, name, repo, first, updated, audit, audit_at,
+                    audit_llm_id in self.db.execute(
+                    "SELECT id, slug, name, gitlab_repo, first_seen, updated, "
+                    "audit, audit_at, audit_llm_id "
                     "FROM project ORDER BY CAST(id AS INTEGER), id")]
+
+    def get(self, pid):
+        row = next((p for p in self.all() if p["id"] == str(pid).strip()), None)
+        return row
+
+    def set_audit(self, pid, text, llm_id=None):
+        """Store the LLM observability verdict shown in the «Проекты» tab."""
+        self.db.execute(
+            "UPDATE project SET audit=?, audit_at=?, audit_llm_id=? WHERE id=?",
+            (text, time.time(), llm_id, str(pid).strip()))
+        self.db.commit()
 
     def ensure(self, pid, slug=None):
         """Auto-register a project seen in a webhook/API response. The sentry
@@ -99,8 +113,4 @@ class ProjectsRepo:
                             (*args, time.time(), pid))
             self.db.commit()
             self._sync()
-        row = self.db.execute(
-            "SELECT id, slug, name, gitlab_repo, first_seen, updated FROM project WHERE id=?",
-            (pid,)).fetchone()
-        return {"id": row[0], "slug": row[1], "name": row[2], "gitlab_repo": row[3],
-                "first_seen": row[4], "updated": row[5]}
+        return self.get(pid)

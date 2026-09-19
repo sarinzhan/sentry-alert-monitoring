@@ -140,12 +140,20 @@ class Database:
             " id TEXT PRIMARY KEY, name TEXT, gitlab_repo TEXT,"
             " first_seen REAL NOT NULL, updated REAL NOT NULL)"
         )
-        try:
+        for stmt in (
             # the sentry-side slug, auto-filled from the API (read-only in the
             # web UI; `name` stays the user-editable display name)
-            db.execute("ALTER TABLE project ADD COLUMN slug TEXT")
-        except sqlite3.OperationalError:
-            pass
+            "ALTER TABLE project ADD COLUMN slug TEXT",
+            # LLM observability audit («Проверить логи» in the web UI): does
+            # this service ship enough events/logs to investigate complaints?
+            "ALTER TABLE project ADD COLUMN audit TEXT",
+            "ALTER TABLE project ADD COLUMN audit_at REAL",
+            "ALTER TABLE project ADD COLUMN audit_llm_id TEXT",
+        ):
+            try:
+                db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
 
         # web investigation history: every /api/explain run — the form fields,
         # the final answer, token usage and the llm_call audit id. Shown in the

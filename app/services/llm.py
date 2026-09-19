@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from claude_agent_sdk import (
     query, ClaudeAgentOptions, ResultMessage, AssistantMessage, UserMessage,
-    ToolUseBlock, ToolResultBlock, TextBlock,
+    ToolUseBlock, ToolResultBlock, TextBlock, StreamEvent,
 )
 
 from app.config import (
@@ -174,6 +174,9 @@ class LlmClient:
             setting_sources=[],                   # don't load CLAUDE.md/skills from disk
             env=_sdk_env(auth_token),
             resume=resume,
+            # raw stream deltas so a UI can type the text out live; only when
+            # someone is actually listening — the events are per-token
+            include_partial_messages=on_event is not None,
         )
         rec = LlmCall(model=model,
                       auth=(mode or "") + ("/personal" if auth_token else ""),
@@ -185,7 +188,19 @@ class LlmClient:
         try:
             async with self._sem:
                 async for message in query(prompt=prompt, options=options):
-                    if isinstance(message, AssistantMessage):
+                    if isinstance(message, StreamEvent):
+                        # live text chunk of the block being generated; the
+                        # complete block still follows as an AssistantMessage
+                        # TextBlock, so consumers treat deltas as display-only
+                        if message.parent_tool_use_id is None:
+                            ev = message.event or {}
+                            delta = ev.get("delta") or {}
+                            if (ev.get("type") == "content_block_delta"
+                                    and delta.get("type") == "text_delta"
+                                    and delta.get("text")):
+                                _emit(on_event, {"type": "delta",
+                                                 "text": delta["text"]})
+                    elif isinstance(message, AssistantMessage):
                         for block in message.content or []:
                             if isinstance(block, ToolUseBlock):
                                 call = {"tool": block.name, "args": block.input}

@@ -1,4 +1,7 @@
-# sentry-telegram
+# Себеп (sentry-telegram)
+
+**Себеп** (кырг. «причина») — the web UI's brand name; the service itself is
+still `sentry-telegram` in compose/deploy.
 
 Receives Sentry webhooks and posts errors to **any** Telegram chat/forum topic that
 subscribes, with an intentional trigger model (new / ongoing / critical), interactive
@@ -199,6 +202,31 @@ tables for rendering. Mind that a resumed session re-sends the prior context
 each turn, so very long chats cost more per message — start a new chat when
 the topic changes. Backend: `GET/DELETE /api/chats[/{id}]`,
 `POST /api/chats/message` (SSE).
+
+LLM runs stream **live**: while the agent works, only its latest step is
+shown («развернуть» reveals the whole trace), the answer text types itself
+out as it is generated (SDK partial messages), and «⏹ Стоп» aborts the run —
+closing the stream cancels the LLM call server-side, so no tokens are burned
+after the click.
+
+The «Проекты» tab can also **manage Sentry itself** (admin): create a project
+in a chosen team, and **invite a user** to the org. SMTP is not configured on
+this Sentry, so the invite email never arrives — instead the UI shows the
+**invite link** to hand to the person (they set a password by it); when the
+Sentry version doesn't expose the link over the API, fall back to
+`sentry createuser` on the server. Both need extra scopes on
+`SENTRY_API_TOKEN`: Internal Integration → Permissions → **Organization:
+Read, Project: Write, Member: Admin**. Without them the forms hide and the
+tab shows what to enable. Backend: `GET /api/sentry/teams`,
+`POST /api/sentry/projects`, `POST /api/sentry/members`.
+
+In the **«Проекты»** tab the «🩺 Логи?» button runs an LLM **observability
+audit** of one service: the agent checks the Sentry logs dataset for that
+service, inspects an error event's tags/breadcrumbs, reads the repo's logging
+code (when mapped), and answers whether there is enough telemetry to
+investigate user complaints — with concrete recommendations (which
+identifiers/log lines to add). The verdict is stored on the project row
+(`POST /api/projects/{id}/audit`, admin only, audited as `web-audit`).
 
 The **«Статистика»** tab shows per-day LLM usage — runs, tokens in/out and
 cost — split between the **shared (system) token** and the user's **personal

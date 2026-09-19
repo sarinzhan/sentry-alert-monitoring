@@ -33,12 +33,15 @@ export const investigate = (body) => post('investigate', body)
 export const explain = (body) => post('explain', body)
 
 // SSE over fetch: POST the form, feed each `data: {...}` event to onEvent as
-// the model works (status / text / tool / tool_result / done / error)
-async function stream(path, body, onEvent) {
+// the model works (status / text / delta / tool / tool_result / done /
+// error). Pass an AbortSignal to stop the run — the server cancels the LLM
+// call as soon as the client disconnects.
+async function stream(path, body, onEvent, signal) {
   const r = await fetch(`${BASE}api/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   if (!r.ok || !r.body) {
     if (r.status === 401) unauthorized()
@@ -65,10 +68,11 @@ async function stream(path, body, onEvent) {
   }
 }
 
-export const explainStream = (body, onEvent) =>
-  stream('explain/stream', body, onEvent)
+export const explainStream = (body, onEvent, signal) =>
+  stream('explain/stream', body, onEvent, signal)
 // free-form question (manager/admin): system prompt + question only
-export const askStream = (body, onEvent) => stream('ask/stream', body, onEvent)
+export const askStream = (body, onEvent, signal) =>
+  stream('ask/stream', body, onEvent, signal)
 
 // --- LLM chat (manager/admin): one conversation = one resumed SDK session,
 // so the model keeps the whole exchange in context between messages ---
@@ -76,8 +80,18 @@ export const getChats = () => get('chats').then((d) => d.chats)
 export const getChat = (id) => get(`chats/${id}`)
 export const deleteChat = (id) => req('DELETE', `chats/${id}`)
 // {question, chat_id?, model?}; the done event carries chat_id
-export const chatMessageStream = (body, onEvent) =>
-  stream('chats/message', body, onEvent)
+export const chatMessageStream = (body, onEvent, signal) =>
+  stream('chats/message', body, onEvent, signal)
+
+// LLM observability audit of one project (admin, «Проекты» tab)
+export const projectAuditStream = (id, onEvent, signal) =>
+  stream(`projects/${encodeURIComponent(id)}/audit`, {}, onEvent, signal)
+
+// --- Sentry org management (admin): create projects, invite users ---
+export const getSentryTeams = () => get('sentry/teams').then((d) => d.teams)
+export const createSentryProject = (body) => post('sentry/projects', body)
+// returns {email, role, invite_link|null} — no SMTP, hand the link over
+export const inviteSentryMember = (body) => post('sentry/members', body)
 
 export const getHistory = () => get('history').then((d) => d.requests)
 // per-day LLM usage split shared/personal token; username — admin only

@@ -105,6 +105,64 @@ class SentryApiClient:
             except Exception as e:
                 log.warning("project name fetch failed: %s", e)
 
+    # -------------------------------------------------- org admin (web UI)
+    # These need token scopes beyond the read-only defaults: teams/projects —
+    # org:read + project:write, member invites — member:write/member:admin
+    # (Internal Integration: Organization Read, Project Write, Member Admin).
+
+    async def list_teams(self):
+        """[{slug, name}] of the org's teams — the project-creation form."""
+        r = await self._api.get(f"/api/0/organizations/{SENTRY_ORG}/teams/",
+                                params={"per_page": 100})
+        r.raise_for_status()
+        return [{"slug": t.get("slug"), "name": t.get("name") or t.get("slug")}
+                for t in r.json()]
+
+    async def create_project(self, team_slug, name):
+        """Create a Sentry project in the team; auto-registers it in the
+        catalog. Returns {id, slug, name}. Raises httpx.HTTPStatusError with
+        Sentry's reason (409 = slug taken, 403 = token lacks project:write)."""
+        r = await self._api.post(
+            f"/api/0/teams/{SENTRY_ORG}/{team_slug}/projects/",
+            json={"name": name})
+        r.raise_for_status()
+        p = r.json()
+        pid = str(p.get("id"))
+        if self.projects is not None:
+            self.projects.ensure(pid, p.get("slug"))
+        log.info("sentry project created: id=%s slug=%s team=%s",
+                 pid, p.get("slug"), team_slug)
+        return {"id": pid, "slug": p.get("slug"), "name": p.get("name")}
+
+    async def invite_member(self, email, role="member", teams=None):
+        """Invite a user to the org (a pending member). Without SMTP the
+        invite email never arrives, so we also fetch the invite LINK from the
+        member detail — the admin hands it to the person, who then sets their
+        password. Returns {id, email, role, invite_link|None} (None when this
+        Sentry version doesn't expose the link — fall back to the CLI)."""
+        payload = {"email": email, "role": role}
+        if teams:
+            payload["teams"] = list(teams)
+        r = await self._api.post(
+            f"/api/0/organizations/{SENTRY_ORG}/members/", json=payload)
+        r.raise_for_status()
+        m = r.json()
+        member_id = m.get("id")
+        link = m.get("inviteLink") or m.get("invite_link")
+        if not link and member_id:
+            try:
+                d = await self._api.get(
+                    f"/api/0/organizations/{SENTRY_ORG}/members/{member_id}/")
+                d.raise_for_status()
+                body = d.json()
+                link = body.get("inviteLink") or body.get("invite_link")
+            except Exception as e:
+                log.warning("invite link fetch failed for %s: %s", email, e)
+        log.info("sentry member invited: %s role=%s link=%s",
+                 email, role, "yes" if link else "no")
+        return {"id": member_id, "email": m.get("email") or email,
+                "role": m.get("role") or role, "invite_link": link}
+
     async def project_id_for_slug(self, slug):
         """Reverse lookup: project slug/name -> numeric id (for the repo map)."""
         if not slug:
