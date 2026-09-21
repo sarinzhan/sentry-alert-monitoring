@@ -140,7 +140,7 @@ app = FastAPI(lifespan=lifespan)
 # project catalog (/api/projects*), runtime settings (/api/settings) and
 # prompt-preset edits; manager — investigation + history + prompt-preset edits
 # (writes to /api/prompts — reads are open, the form needs them) + free-form
-# LLM questions (/api/ask*, /api/chats*); user — investigation + history only.
+# LLM questions (/api/ask*); user — investigation + history + chat (/api/chats*).
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
 _ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings", "/api/sentry")
@@ -166,7 +166,7 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"error": "нужны права администратора"},
                                 status_code=403)
         if (role not in ("admin", "manager")
-                and (rel.startswith(("/api/ask", "/api/chats"))
+                and (rel.startswith("/api/ask")
                      or (rel.startswith("/api/prompts")
                          and request.method != "GET"))):
             return JSONResponse({"error": "нужны права менеджера"},

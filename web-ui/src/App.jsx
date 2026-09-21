@@ -158,10 +158,8 @@ export default function App() {
                   onClick={() => setView('history')}>История</button>
           <button className={view === 'usage' ? 'tab active' : 'tab'}
                   onClick={() => setView('usage')}>Статистика</button>
-          {canPrompts && (
-            <button className={view === 'ask' ? 'tab active' : 'tab'}
-                    onClick={() => setView('ask')}>Чат</button>
-          )}
+          <button className={view === 'ask' ? 'tab active' : 'tab'}
+                  onClick={() => setView('ask')}>Чат</button>
           {canPrompts && (
             <button className={view === 'prompts' ? 'tab active' : 'tab'}
                     onClick={() => setView('prompts')}>Промпты</button>
@@ -222,13 +220,11 @@ export default function App() {
       {/* panels stay mounted and are only hidden, so switching tabs keeps
           their state (form fields, chat, streams); inactive panels are
           hidden via the HTML hidden attribute */}
-      {canPrompts && (
-        <div hidden={view !== 'ask'}>
-          <h1>Чат</h1>
-          <AskPanel onQuota={() =>
-            getMe().then((u) => u && setUser(u)).catch(() => {})} />
-        </div>
-      )}
+      <div hidden={view !== 'ask'}>
+        <h1>Чат</h1>
+        <AskPanel onQuota={() =>
+          getMe().then((u) => u && setUser(u)).catch(() => {})} />
+      </div>
       <div hidden={view !== 'usage'}>
         <h1>Статистика LLM</h1>
         <UsagePanel user={user} active={view === 'usage'} />

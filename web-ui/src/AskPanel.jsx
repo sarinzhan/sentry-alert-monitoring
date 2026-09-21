@@ -3,7 +3,7 @@ import { getMeta, getChats, getChat, deleteChat, chatMessageStream } from './api
 import Reasoning from './Reasoning.jsx'
 import TokenPrompt from './TokenPrompt.jsx'
 
-// Chat with the LLM — manager and admin only. Every conversation is one SDK
+// Chat with the LLM — available to every signed-in role. Every conversation is one SDK
 // session resumed on each follow-up, so the model remembers the whole
 // exchange, its own earlier tool calls included. The answer is typed out
 // live (stream deltas); «Стоп» aborts the fetch, which cancels the LLM run
