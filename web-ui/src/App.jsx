@@ -5,6 +5,7 @@ import ProjectsPanel from './ProjectsPanel.jsx'
 import HistoryPanel from './HistoryPanel.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
+import TelegramChatsPanel from './TelegramChatsPanel.jsx'
 import PromptsPanel from './PromptsPanel.jsx'
 import AskPanel from './AskPanel.jsx'
 import UsagePanel from './UsagePanel.jsx'
@@ -173,6 +174,10 @@ export default function App() {
                     onClick={() => setView('users')}>Пользователи</button>
           )}
           {isAdmin && (
+            <button className={view === 'tgchats' ? 'tab active' : 'tab'}
+                    onClick={() => setView('tgchats')}>Чаты Telegram</button>
+          )}
+          {isAdmin && (
             <button className={view === 'settings' ? 'tab active' : 'tab'}
                     onClick={() => setView('settings')}>Настройки</button>
           )}
@@ -245,6 +250,12 @@ export default function App() {
         <div hidden={view !== 'users'}>
           <h1>Пользователи</h1>
           <UsersPanel />
+        </div>
+      )}
+      {isAdmin && (
+        <div hidden={view !== 'tgchats'}>
+          <h1>Чаты Telegram</h1>
+          <TelegramChatsPanel active={view === 'tgchats'} />
         </div>
       )}
       {isAdmin && (

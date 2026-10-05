@@ -6,9 +6,14 @@ read-modify-write of the send state.
 """
 import json
 import time
+import hashlib
 import asyncio
 
 from app.config import LOG_RAW_PAYLOAD, LOG_LLM_PROMPT, log
+
+# Sentry delivers webhooks at-least-once; a redelivery of the SAME event within
+# this window is dropped (idempotency), so one error can't alert twice.
+_DEDUP_WINDOW_SEC = 120
 from app.summaries import fmt_duration
 from app.sentry.parser import parse, NOTIFY_ACTIONS
 from app.sentry.message import build_message
@@ -38,6 +43,28 @@ class EventPipeline:
         self.analysis = analysis
         self._send = sender
         self._lock = asyncio.Lock()
+        self._recent = {}          # delivery key -> ts, for at-least-once dedup
+
+    @staticmethod
+    def _delivery_key(p, payload):
+        """Identify one webhook delivery: the Sentry event id when present,
+        otherwise a hash of the whole payload (catches re-sent issue payloads
+        that carry no event id)."""
+        if p.get("event_id"):
+            return f"e:{p['event_id']}"
+        blob = json.dumps(payload, sort_keys=True, default=str)
+        return "h:" + hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+
+    def _seen_recently(self, key, now):
+        """True if this exact delivery was already processed within the dedup
+        window; records it otherwise. Caller must hold self._lock."""
+        cutoff = now - _DEDUP_WINDOW_SEC
+        for k in [k for k, t in self._recent.items() if t < cutoff]:
+            del self._recent[k]
+        if key in self._recent:
+            return True
+        self._recent[key] = now
+        return False
 
     async def process(self, resource: str, payload: dict):
         try:
@@ -51,8 +78,15 @@ class EventPipeline:
                 log.info("ignored action=%s issue=%s", p.get("action"), p["issue_id"])
                 return
             now = time.time()
-            # record the occurrence globally + keep issue metadata (short id, title)
+            # drop re-deliveries of the SAME webhook (Sentry is at-least-once) so
+            # one error can't produce two identical alerts
+            dedup_key = self._delivery_key(p, payload)
             async with self._lock:
+                if self._seen_recently(dedup_key, now):
+                    log.info("ignored duplicate delivery issue=%s key=%s",
+                             p["issue_id"], dedup_key[:18])
+                    return
+                # record the occurrence globally + keep issue metadata (short id, title)
                 self.issues.record_event(p["issue_id"], p.get("usr"), now)
             p["short"] = self.issues.ensure_issue(p["issue_id"], p.get("title") or "")
 

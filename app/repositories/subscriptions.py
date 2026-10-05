@@ -40,6 +40,15 @@ class SubscriptionsRepo:
             "SELECT project FROM chat_subscription WHERE chat_id=? ORDER BY project", (str(chat_id),)
         ).fetchall()]
 
+    def all_rows(self):
+        """Every subscription row, for the web admin panel. [{chat_id, project,
+        thread_id, by, at}] ordered by chat then project."""
+        rows = self.db.execute(
+            "SELECT chat_id, project, thread_id, by, at FROM chat_subscription "
+            "ORDER BY chat_id, project").fetchall()
+        return [{"chat_id": r[0], "project": r[1], "thread_id": r[2],
+                 "by": r[3], "at": r[4]} for r in rows]
+
     def chats_for(self, *keys):
         """Chats subscribed to any of the given project keys or to '*'.
         Returns [(chat_id, thread_id)], de-duplicated per chat (prefers a topic thread)."""

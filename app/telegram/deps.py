@@ -21,3 +21,4 @@ class Deps:
     sentry: object          # SentryApiClient (/req, /why, /activity)
     gitlab: object          # GitLabClient (/api docs generation)
     knowledge: object = None  # KnowledgeService (notes memory: tools + /notes)
+    chat_meta: object = None  # ChatMetaRepo (records chat titles for the web panel)

@@ -7,7 +7,7 @@ _helpers.reply.
 """
 from telegram import BotCommand, Update
 from telegram.error import TelegramError
-from telegram.ext import CommandHandler, filters
+from telegram.ext import CommandHandler, TypeHandler, filters
 
 from app.config import log
 from app.telegram.commands import (
@@ -93,6 +93,20 @@ def _logged(handler):
     return wrapped
 
 
+async def _capture_chat(update, ctx):
+    """Record every chat's identity (title / @username / type) so the web admin
+    panel can list chats by name. Runs on every update (group -1, before the
+    command handlers) and never blocks them."""
+    chat = update.effective_chat
+    meta = ctx.bot_data["deps"].chat_meta
+    if chat is None or meta is None:
+        return
+    try:
+        meta.upsert(chat.id, chat.title, chat.username, chat.type)
+    except Exception as e:                       # never let bookkeeping break a command
+        log.warning("chat_meta upsert failed for chat=%s: %s", chat.id, e)
+
+
 async def _on_error(update, ctx):
     """Log handler exceptions and tell the chat — otherwise a failed command
     just looks like the bot ignored it."""
@@ -108,6 +122,8 @@ async def _on_error(update, ctx):
 def register_all(app, deps):
     """Inject deps and register every command handler."""
     app.bot_data["deps"] = deps
+    # group -1: record chat identity on every update, before the commands (group 0)
+    app.add_handler(TypeHandler(Update, _capture_chat), group=-1)
     for names, handler in _COMMANDS:
         app.add_handler(CommandHandler(names, _logged(handler), filters=_CMD_FILTERS))
     app.add_error_handler(_on_error)

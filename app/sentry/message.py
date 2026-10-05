@@ -28,15 +28,16 @@ def build_message(p: dict, analysis: str = None) -> str:
     author = f"{who} · {esc(b.get('date') or '?')}" if who else ""
     short = f"<code>#{esc(p.get('short'))}</code>" if p.get("short") else ""
     lines.append(" · ".join(x for x in (author, counts, short) if x))
-    # line 3: the commit message that last touched the crash line
+    # affected users — right under the counts line
+    if p.get("user_count"):
+        lines.append(f"👥 затронуто пользователей: {esc(p['user_count'])}")
+    # LLM explanation — что сломалось / причина / исправление (escalating prod only)
+    if analysis:
+        lines += ["", analysis]
+    # the commit message that last touched the crash line
     if b.get("subject"):
         lines.append(f"💬 <i>{esc(b['subject'])}</i>")
     lines.append("")
-
-    # LLM cause / fix first (only present for escalating prod alerts)
-    if analysis:
-        lines.append(analysis)
-        lines.append("")
 
     # then the rest
     lines.append(f"<b>{esc(p.get('title'))}</b>")
@@ -50,7 +51,6 @@ def build_message(p: dict, analysis: str = None) -> str:
     meta = []
     if p.get("level"):      meta.append(f"level {esc(p['level'])}")
     if p.get("count"):      meta.append(f"events {esc(p['count'])}")
-    if p.get("user_count"): meta.append(f"users {esc(p['user_count'])}")
     if meta:
         lines.append(" · ".join(meta))
 

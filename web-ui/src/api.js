@@ -93,6 +93,19 @@ export const createSentryProject = (body) => post('sentry/projects', body)
 // returns {email, role, invite_link|null} — no SMTP, hand the link over
 export const inviteSentryMember = (body) => post('sentry/members', body)
 
+// --- Telegram chat settings (admin): subscriptions + per-chat trigger rules ---
+// {chats, projects, rule_defaults, all_statuses}
+export const getTelegramChats = () => get('telegram/chats')
+export const tgSubscribe = (chat_id, project) =>
+  post('telegram/chats/subscribe', { chat_id, project })
+export const tgUnsubscribe = (chat_id, project) =>
+  post('telegram/chats/unsubscribe', { chat_id, project })
+// body: {rules?: {col: value|null}, statuses?: [..]|null}
+export const tgSaveRules = (chat_id, body) =>
+  req('PUT', 'telegram/chats/rules', { chat_id, ...body })
+export const tgResetRules = (chat_id) =>
+  post('telegram/chats/rules/reset', { chat_id })
+
 export const getHistory = () => get('history').then((d) => d.requests)
 // per-day LLM usage split shared/personal token; username — admin only
 export const getUsage = (period, username) =>

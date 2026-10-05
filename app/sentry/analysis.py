@@ -51,11 +51,15 @@ class AnalysisService:
             or f"{p.get('type')}: {p.get('value')}"
         stack = "\n".join(p.get("frames_full") or p.get("frames") or [])
         prompt = (
-            "You are a senior backend engineer triaging a Sentry error. Use the recent "
-            "change diff to judge whether it introduced the bug. "
-            "Reply in at most 4 short lines, plain text:\n"
-            "Likely cause: <one sentence>\n"
-            "Suggested fix: <one or two sentences>\n\n"
+            "You are a senior backend engineer triaging a Sentry error for a mobile "
+            "operator. Use the recent change diff to judge whether it introduced the "
+            "bug. Answer in RUSSIAN, plain text, exactly three short lines, no jargon "
+            "a non-engineer wouldn't get:\n"
+            "Что сломалось: <что именно не работает у пользователя — напр. не грузится "
+            "приложение, нельзя авторизоваться, не подключается пакет>\n"
+            "Причина: <почему — изменение кода (кто/какой коммит), некорректный "
+            "запрос, проблема данных и т.п.; если не точно — самая вероятная версия>\n"
+            "Исправление: <1–2 предложения, что сделать>\n\n"
             f"Culprit: {p.get('culprit')}\n"
             f"Environment: {p.get('environment')}\n"
             + (f"Trace id: {p['trace_id']}\n" if p.get("trace_id") else "")

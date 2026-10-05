@@ -313,4 +313,12 @@ class Database:
             " chat_id TEXT NOT NULL, project TEXT NOT NULL,"
             " last_sent REAL NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, project))"
         )
+        # human-readable Telegram chat identity (title / @username / type),
+        # recorded by the bot on every update so the web admin panel can show
+        # chats by name instead of a bare numeric id.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS chat_meta ("
+            " chat_id TEXT PRIMARY KEY, title TEXT, username TEXT, type TEXT,"
+            " updated REAL NOT NULL)"
+        )
         db.commit()

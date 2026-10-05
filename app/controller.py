@@ -22,12 +22,14 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import (ANTHROPIC_MODEL, AUTH_SESSION_HOURS, BOT_TOKEN,
                         LLM_DAILY_LIMIT, LLM_DAILY_TOKENS, TELEGRAM_POLLING,
-                        TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, WEB_LLM_MODELS, log)
-from app.summaries import banner
+                        TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, WEB_LLM_MODELS,
+                        DEFAULT_RULES, ALERT_STATUSES, log)
+from app.summaries import banner, parse_duration
 from app.db import Database
 from app.repositories.issues import IssuesRepo
 from app.repositories.subscriptions import SubscriptionsRepo
-from app.repositories.rules import RulesRepo
+from app.repositories.rules import RulesRepo, RULE_COLUMNS
+from app.repositories.chat_meta import ChatMetaRepo
 from app.repositories.chat_state import ChatStateRepo
 from app.repositories.keywords import KeywordsRepo
 from app.repositories.usermap import UserMapRepo
@@ -63,6 +65,7 @@ async def lifespan(app: FastAPI):
     issues = IssuesRepo(db.conn)
     subscriptions = SubscriptionsRepo(db.conn)
     rules = RulesRepo(db.conn)
+    chat_meta = ChatMetaRepo(db.conn)     # telegram chat titles (web admin panel)
     chat_state = ChatStateRepo(db.conn)
     keywords = KeywordsRepo(db.conn)
     usermap = UserMapRepo(db.conn)
@@ -101,7 +104,7 @@ async def lifespan(app: FastAPI):
                 keywords=keywords, usermap=usermap, analysis=analysis,
                 pipeline=pipeline, llm=llm, llm_audit=llm_audit,
                 context=context, sentry=sentry_api, gitlab=gitlab,
-                knowledge=knowledge)
+                knowledge=knowledge, chat_meta=chat_meta)
     register_all(bot.app, deps)
 
     app.state.bot = bot
@@ -117,6 +120,9 @@ async def lifespan(app: FastAPI):
     app.state.services = (sentry_api, gitlab, llm)
     app.state.knowledge = knowledge
     app.state.chats = chats
+    app.state.subscriptions = subscriptions
+    app.state.rules = rules
+    app.state.chat_meta = chat_meta
 
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
@@ -143,7 +149,8 @@ app = FastAPI(lifespan=lifespan)
 # LLM questions (/api/ask*); user — investigation + history + chat (/api/chats*).
 
 _AUTH_OPEN = {"/api/auth/login", "/admin-web/api/auth/login"}
-_ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings", "/api/sentry")
+_ADMIN_ONLY = ("/api/users", "/api/projects", "/api/settings", "/api/sentry",
+               "/api/telegram")
 _SESSION_COOKIE = "session"
 
 
@@ -862,6 +869,162 @@ async def chats_delete(request: Request, conv_id: int):
     if not n:
         return JSONResponse({"error": "чат не найден"}, status_code=404)
     return {"deleted": conv_id}
+
+
+# --- Telegram chat settings (admin only, enforced by the middleware) ---------
+# Web mirror of the bot's /subscribe, /alerts and /set commands: one admin
+# screen to see every chat the bot knows and edit its subscriptions + rules.
+
+# rule column -> value kind, mirroring rules_set.RULE_KEYS (the /set command).
+_RULE_KINDS = {
+    "ongoing_sec":             "duration",
+    "critical_window_sec":     "duration",
+    "critical_threshold":      "int",
+    "affected_user_threshold": "int",
+    "critical_ratelimit_sec":  "duration",
+    "project_window_sec":      "duration0",   # 0 = off
+    "stat_windows":            "windows",
+}
+
+
+def _parse_rule(kind, raw):
+    """(value, error) for one rule field. Accepts duration strings ('12h') or
+    bare seconds; stat_windows accepts a 3-item list or a '12h/6h/10m' string."""
+    if kind in ("duration", "duration0"):
+        v = parse_duration(raw)
+        floor = 1 if kind == "duration" else 0
+        if v is None or v < floor:
+            return None, "нужна длительность (напр. 12h, 10m, 30s)" + (
+                " или 0" if kind == "duration0" else "")
+        return v, None
+    if kind == "int":
+        try:
+            v = int(raw)
+            assert v >= 0
+        except (TypeError, ValueError, AssertionError):
+            return None, "нужно неотрицательное целое"
+        return v, None
+    # windows: exactly three positive durations
+    parts = raw if isinstance(raw, list) else str(raw).replace(",", "/").split("/")
+    secs = [parse_duration(x) for x in parts if str(x).strip()]
+    if len(secs) != 3 or any(v is None or v <= 0 for v in secs):
+        return None, "нужно ровно 3 окна (напр. 12h/6h/10m)"
+    return ",".join(str(v) for v in secs), None
+
+
+@app.get("/api/telegram/chats")
+async def telegram_chats(request: Request):
+    """Every chat the bot knows (from subscriptions, per-chat rules, or any
+    update it saw) with its subscriptions, alert statuses and trigger rules."""
+    subs = request.app.state.subscriptions
+    rules = request.app.state.rules
+    metas = request.app.state.chat_meta.all()
+    by_chat = {}
+    for r in subs.all_rows():
+        by_chat.setdefault(r["chat_id"], []).append(r)
+    ids = set(by_chat) | set(rules.chat_ids()) | set(metas)
+    out = []
+    for cid in sorted(ids, key=lambda x: ((metas.get(x, {}).get("title") or "").lower(), x)):
+        eff = rules.effective(cid)
+        meta = metas.get(cid, {})
+        out.append({
+            "chat_id": cid,
+            "title": meta.get("title"),
+            "username": meta.get("username"),
+            "type": meta.get("type"),
+            "subscriptions": by_chat.get(cid, []),
+            "statuses": sorted(eff["statuses"]) if eff.get("statuses") else None,
+            "rules": {k: eff[k] for k in _RULE_KINDS},
+            "overrides": rules.overrides(cid),
+        })
+    return {"chats": out,
+            "projects": subs.projects_overview(),
+            "rule_defaults": {k: DEFAULT_RULES[k] for k in _RULE_KINDS},
+            "all_statuses": list(ALERT_STATUSES)}
+
+
+@app.post("/api/telegram/chats/subscribe")
+async def telegram_subscribe(request: Request):
+    """Subscribe a chat to a project id/slug (or 'all'/'*' for every project)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    chat_id = str(body.get("chat_id") or "").strip()
+    project = str(body.get("project") or "").strip()
+    if not chat_id or not project:
+        return JSONResponse({"error": "chat_id и project обязательны"}, status_code=422)
+    proj = "*" if project.lower() in ("all", "*", "все") else project
+    request.app.state.subscriptions.subscribe(
+        chat_id, proj, by=request.state.user["username"])
+    return {"ok": True}
+
+
+@app.post("/api/telegram/chats/unsubscribe")
+async def telegram_unsubscribe(request: Request):
+    """Remove one of a chat's project subscriptions."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    chat_id = str(body.get("chat_id") or "").strip()
+    project = str(body.get("project") or "").strip()
+    if not chat_id or not project:
+        return JSONResponse({"error": "chat_id и project обязательны"}, status_code=422)
+    n = request.app.state.subscriptions.unsubscribe(chat_id, project)
+    return {"removed": n}
+
+
+@app.put("/api/telegram/chats/rules")
+async def telegram_rules(request: Request):
+    """Edit a chat's trigger rules and/or alert statuses:
+    {chat_id, rules?: {column: value|null}, statuses?: [..]|null}. A null rule
+    value clears that override (back to the global default); statuses null/[]
+    means all statuses."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    chat_id = str(body.get("chat_id") or "").strip()
+    if not chat_id:
+        return JSONResponse({"error": "chat_id обязателен"}, status_code=422)
+    rules = request.app.state.rules
+    for col, raw in (body.get("rules") or {}).items():
+        if col not in _RULE_KINDS or col not in RULE_COLUMNS:
+            return JSONResponse({"error": f"неизвестное правило {col!r}"}, status_code=422)
+        if raw in (None, ""):
+            rules.set_rule(chat_id, col, None)        # clear -> default
+            continue
+        val, err = _parse_rule(_RULE_KINDS[col], raw)
+        if err:
+            return JSONResponse({"error": f"{col}: {err}"}, status_code=422)
+        rules.set_rule(chat_id, col, val)
+    if "statuses" in body:
+        st = body.get("statuses")
+        if not st:
+            rules.set_statuses(chat_id, None)         # all
+        else:
+            picked = {s for s in st if s in ALERT_STATUSES}
+            if not picked:
+                return JSONResponse({"error": "статусы: допустимо "
+                                    + ", ".join(ALERT_STATUSES)}, status_code=422)
+            rules.set_statuses(chat_id, picked)
+    return {"ok": True}
+
+
+@app.post("/api/telegram/chats/rules/reset")
+async def telegram_rules_reset(request: Request):
+    """Drop a chat's trigger-rule overrides (back to global defaults). Keeps its
+    subscriptions and alert statuses."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    chat_id = str(body.get("chat_id") or "").strip()
+    if not chat_id:
+        return JSONResponse({"error": "chat_id обязателен"}, status_code=422)
+    request.app.state.rules.reset(chat_id)
+    return {"ok": True}
 
 
 def _sentry_admin_error(e):

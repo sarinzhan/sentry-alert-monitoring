@@ -35,6 +35,25 @@ class RulesRepo:
                 r["stat_windows"] = wins
         return r
 
+    def chat_ids(self):
+        """Chat ids that have a per-chat rules row (any override, incl. statuses)."""
+        return [r[0] for r in self.db.execute(
+            "SELECT chat_id FROM chat_rules").fetchall()]
+
+    def overrides(self, chat_id):
+        """Which rule columns this chat overrides (non-NULL), as a list. 'statuses'
+        is included when the chat restricts statuses. Empty = pure defaults."""
+        row = self.db.execute(
+            "SELECT statuses, ongoing_sec, critical_window_sec, critical_threshold,"
+            " affected_user_threshold, critical_ratelimit_sec, project_window_sec, stat_windows"
+            " FROM chat_rules WHERE chat_id=?", (str(chat_id),)).fetchone()
+        if not row:
+            return []
+        cols = ("statuses", "ongoing_sec", "critical_window_sec", "critical_threshold",
+                "affected_user_threshold", "critical_ratelimit_sec",
+                "project_window_sec", "stat_windows")
+        return [c for c, v in zip(cols, row) if v is not None]
+
     def set_rule(self, chat_id, column, value):
         """Set one per-chat rule override (column must be in RULE_COLUMNS)."""
         if column not in RULE_COLUMNS:
