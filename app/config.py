@@ -173,13 +173,13 @@ ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
 # valid ~1 year. If both are set the API key wins (matches the SDK's precedence).
 CLAUDE_CODE_OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip() or None
 LLM_AUTH_OK        = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
-ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+ANTHROPIC_MODEL    = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")
 # Models offered in the web UI selector (comma-separated). ANTHROPIC_MODEL is
 # the default choice and is always included.
 WEB_LLM_MODELS = [m.strip() for m in os.environ.get(
     "WEB_LLM_MODELS",
-    "claude-fable-5,claude-opus-4-8,claude-sonnet-4-6,"
-    "claude-haiku-4-5-20251001"
+    "claude-opus-5-5,claude-fable-5-1,claude-sonnet-5-5,"
+    "claude-haiku-4-5-20251001,claude-opus-4-8"
 ).split(",") if m.strip()]
 if ANTHROPIC_MODEL not in WEB_LLM_MODELS:
     WEB_LLM_MODELS.insert(0, ANTHROPIC_MODEL)
