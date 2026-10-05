@@ -163,8 +163,11 @@ a preset — last hour / 24 h / 3 days (default) / 7 / 14 days / month — or a
 custom local date range (dates only, inclusive, converted to UTC via
 `TIMEZONE_OFFSET_HOURS`).
 The environment select is populated from `WEB_ENVIRONMENTS` (default
-`prod,stage`; values must match Sentry environment names) and overrides the
-global `SENTRY_ENVIRONMENTS` for that query. Backend: `POST /api/investigate`.
+`prod,stage`; values must match Sentry environment names), defaults to `prod`,
+and offers «все среды» (all) to override it. Every Discover search defaults to
+**prod only** (`DEFAULT_ENVIRONMENTS` in `sentry_api.py`) — this covers the LLM
+tools, the Telegram commands and the form; the form's «все среды» searches all.
+Backend: `POST /api/investigate`.
 
 The **«Проекты»** tab manages the project catalog (the `project` DB table):
 sentry project id → display name + GitLab repo link. `SENTRY_PROJECTS` /

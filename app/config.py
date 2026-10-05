@@ -73,14 +73,6 @@ SENTRY_LOGS_DATASET = os.environ.get("SENTRY_LOGS_DATASET", "logs").strip()
 # hence attribute OR full-text by default.
 SENTRY_LOGS_MSISDN_QUERY = os.environ.get(
     "SENTRY_LOGS_MSISDN_QUERY", '(msisdn:"{value}" OR message:"{value}")')
-# Which projects Discover queries cover. Default -1 = ALL projects; without an
-# explicit value Sentry falls back to the token's "member projects" only.
-# Comma-separated numeric ids to narrow (e.g. "2,3,6").
-SENTRY_SEARCH_PROJECTS = [p.strip() for p in os.environ.get(
-    "SENTRY_SEARCH_PROJECTS", "-1").split(",") if p.strip()]
-# Environments to search; empty = all (prod, stage, dev, ...).
-SENTRY_ENVIRONMENTS = [e.strip() for e in os.environ.get(
-    "SENTRY_ENVIRONMENTS", "").split(",") if e.strip()]
 
 # Project id -> display NAME for the message header, e.g. "3:s_billing,4:billing".
 # Checked before the Sentry API lookup. Accept SENTRY_PROJECTS (preferred) or the

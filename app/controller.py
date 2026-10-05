@@ -959,8 +959,8 @@ async def project_audit(request: Request, pid: str):
     code, then answers with a verdict + concrete recommendations. Stored on
     the project row (shown in «Проекты»), audited as web-audit."""
     from app.config import (SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS,
-                            SENTRY_DEVICE_ID_FIELDS, AGENT_MAX_TURNS,
-                            ENABLE_LLM_TOOLS)
+                            SENTRY_DEVICE_ID_FIELDS, SENTRY_LOGS_MSISDN_QUERY,
+                            AGENT_MAX_TURNS, ENABLE_LLM_TOOLS)
     from app.services.gitlab_tools import build_gitlab_server
     from app.services.sentry_tools import build_sentry_server
 
@@ -1015,7 +1015,8 @@ async def project_audit(request: Request, pid: str):
         f"resource.service.name:\"{row['slug'] or label}\" over period '3d', "
         "then full-text by the service name). Are ordinary operations logged, "
         "or only errors? Do log lines carry user identifiers — msisdn "
-        f"(configured keys: {', '.join(SENTRY_MSISDN_FIELDS)}), request id "
+        f"(configured keys: {', '.join(SENTRY_MSISDN_FIELDS)}; log lines "
+        f"matched via {SENTRY_LOGS_MSISDN_QUERY}), request id "
         f"({', '.join(SENTRY_REQUEST_ID_FIELDS)}), device id "
         f"({', '.join(SENTRY_DEVICE_ID_FIELDS)})?\n"
         "2. ERROR EVENTS: if you find an event id (in logs or via "

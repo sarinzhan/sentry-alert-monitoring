@@ -13,8 +13,7 @@ import httpx
 from app.config import (
     SENTRY_API_URL, SENTRY_ORG, SENTRY_API_TOKEN, PROJECT_NAMES,
     SENTRY_MSISDN_FIELDS, SENTRY_REQUEST_ID_FIELDS,
-    SENTRY_LOGS_DATASET, SENTRY_LOGS_MSISDN_QUERY,
-    SENTRY_SEARCH_PROJECTS, SENTRY_ENVIRONMENTS, log,
+    SENTRY_LOGS_DATASET, SENTRY_LOGS_MSISDN_QUERY, log,
 )
 
 # columns every Discover query returns; issue.id maps a hit back to our #short
@@ -25,6 +24,12 @@ DISCOVER_FIELDS = ("id", "title", "project", "message", "issue", "issue.id",
 LOG_FIELDS = ("timestamp", "message", "resource.service.name",
               "instrumentation.name", "trace", "msisdn", "deviceId",
               "exception.type", "exception.message", "exception.stacktrace")
+
+# Default Discover scope when the caller doesn't specify one (the LLM tools,
+# the Telegram commands, the web form's default): prod only. The web form can
+# still pick a specific env, or pass [] (its "all environments" choice) to search
+# every environment.
+DEFAULT_ENVIRONMENTS = ["prod"]
 
 
 def discover_error_hint(e):
@@ -185,16 +190,16 @@ class SentryApiClient:
         """Events across ALL projects matching a Discover search query
         (self-hosted Sentry ships Discover). Time range: start+end (ISO 8601,
         UTC) or stats_period like '24h'/'7d'. dataset=None queries errors;
-        'logs' queries application log lines. Project scope and environments
-        come from SENTRY_SEARCH_PROJECTS / SENTRY_ENVIRONMENTS — without an
-        explicit project param Sentry silently narrows to the token's "member
-        projects", so -1 (all) is sent by default. environments overrides the
-        global SENTRY_ENVIRONMENTS for this one query (the web form's
-        stage/prod choice). Raises on HTTP errors."""
+        'logs' queries application log lines. Always scoped to project=-1 (all
+        projects) — without an explicit project param Sentry silently narrows to
+        the token's "member projects". environments filters by environment:
+        None (the default for every caller that doesn't say otherwise) means
+        DEFAULT_ENVIRONMENTS (prod only); pass [] to search all environments, or
+        a list to pick specific ones. Raises on HTTP errors."""
         params = [("field", f) for f in fields]
         params += [("query", query), ("sort", "-timestamp"), ("per_page", str(limit))]
-        params += [("project", p) for p in SENTRY_SEARCH_PROJECTS]
-        envs = SENTRY_ENVIRONMENTS if environments is None else environments
+        params.append(("project", "-1"))
+        envs = DEFAULT_ENVIRONMENTS if environments is None else environments
         params += [("environment", e) for e in envs]
         if dataset:
             params.append(("dataset", dataset))

@@ -82,7 +82,9 @@ async def investigate(sentry, *, description, request_id=None, device_id=None,
         raise ValidationError(
             "укажите хотя бы одно из: request id, device id, номер (msisdn)")
     window = build_window(period, date_from, date_to)
-    envs = [environment.strip()] if (environment or "").strip() else None
+    # "" from the form = "all environments" -> [] so it overrides the prod
+    # default; a named env -> just that one.
+    envs = [environment.strip()] if (environment or "").strip() else []
 
     searches, events_by_id, logs = [], {}, []
     for id_type, keys, value in ids:
