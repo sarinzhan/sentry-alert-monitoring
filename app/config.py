@@ -191,7 +191,7 @@ AGENT_MAX_CONCURRENCY = int(os.environ.get("AGENT_MAX_CONCURRENCY", "2"))
 ENABLE_LLM_TOOLS = os.environ.get("ENABLE_LLM_TOOLS", "true").lower() == "true"
 # Turn ceiling for the tool loop (each turn = one model call; tool results come
 # back between turns). Only used when tools are attached; one-shot stays at 1.
-AGENT_MAX_TURNS = int(os.environ.get("AGENT_MAX_TURNS", "15"))
+AGENT_MAX_TURNS = int(os.environ.get("AGENT_MAX_TURNS", "50"))
 # Hard ceiling on the LLM's *output* length (a cap, not a target — billed per token
 # actually generated). Too low truncates the cause/fix mid-sentence.
 ANTHROPIC_MAX_TOKENS = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "1024"))
