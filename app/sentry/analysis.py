@@ -1,8 +1,8 @@
 """AnalysisService — the LLM cause/fix use-case.
 
 Orchestrates: cache (ContextRepo) → GitLab source+diff enrichment → prompt →
-LlmClient → cache write. Used by the pipeline (escalating prod alerts) and by
-the /ai command (analyze_ref, on demand). /ai runs agentically: the model gets
+LlmClient → cache write. Used by the pipeline (every alert) and by the /ai
+command (analyze_ref, on demand). /ai runs agentically: the model gets
 read-only GitLab tools over the mapped service repos (crashing service first)
 plus a Sentry related_errors(trace_id) tool to chase cross-service causes;
 the pipeline keeps the cheaper one-shot prompt.
@@ -26,10 +26,12 @@ class AnalysisService:
         self._audit = audit        # LlmAuditRepo (per-call audit trail)
         self._knowledge = knowledge  # KnowledgeService (notes memory tools)
 
-    async def analyze(self, p: dict, use_tools: bool = False, chat_id=None):
+    async def analyze(self, p: dict, use_tools: bool = False, chat_id=None,
+                      kind: str = "alert"):
         """Cause + fix for a parsed event. Returns text, or None if unavailable.
         Cached per issue+commit so repeats reuse the answer until the code changes.
-        use_tools=True attaches the GitLab tool set (agentic loop, /ai path)."""
+        use_tools=True attaches the agentic tool set (GitLab + Sentry + notes).
+        kind labels the audit row and the notes source ('alert' or 'ai')."""
         issue_id = p.get("issue_id")
         blame_sha = (p.get("blame") or {}).get("sha_full") or "-"
         if self._llm.enabled and issue_id:
@@ -75,41 +77,46 @@ class AnalysisService:
                 f"\"{blame.get('subject')}\") — previous vs current (diff):\n{change}"
             )
 
-        # agentic path (/ai): read-only GitLab tools over the mapped repos
-        # (crashing service is the default), plus cross-service error lookup
-        # by trace id, so the model can chase a cause into an upstream service
-        servers = allowed = None
+        # tool-enabled path: GitLab tools when the service repo is mapped, PLUS
+        # Sentry tools regardless of mapping (cross-service error lookup by trace,
+        # event lookups, and application-LOG search), PLUS the notes memory — so
+        # the model can look things up when the embedded source+diff isn't enough.
+        servers, allowed = {}, []
         if use_tools and ENABLE_LLM_TOOLS:
             repo = self._gitlab.repo_for(p)
             if repo:
-                servers, allowed = build_gitlab_server(self._gitlab, repo)
+                gs, ga = build_gitlab_server(self._gitlab, repo)
+                servers.update(gs)
+                allowed += ga
                 prompt += (
                     f"\n\nYou have read-only GitLab tools (read_file, find_file, "
                     f"search_code, blame, commit_diff, recent_commits) over the "
                     f"mapped service repos, ref {GITLAB_REF}; each takes a 'repo' "
                     f"argument defaulting to the crashing service's repo ({repo})."
                 )
-                s2, a2 = build_sentry_server(self._sentry)
-                if s2:
-                    servers.update(s2)
-                    allowed = allowed + a2
-                    prompt += (
-                        " There is also related_errors(trace_id): error events "
-                        "across ALL services on one trace — if the failure looks "
-                        "caused by an upstream service (HTTP 5xx, timeout from a "
-                        "downstream call), use it with the trace id above, then "
-                        "read that service's repo."
-                    )
+            ss, sa = build_sentry_server(self._sentry)
+            if ss:
+                servers.update(ss)
+                allowed += sa
                 prompt += (
-                    " Use the tools if the context above is not enough to be "
-                    "confident. Keep the final answer in the format above, and "
-                    "if the cause is in another service, name that service."
+                    "\n\nYou have Sentry tools: find_events (by request_id / "
+                    "device_id / msisdn), related_errors(trace_id) to chase a "
+                    "failure upstream across services (use the trace id above when "
+                    "it looks caused by a downstream HTTP 5xx / timeout), "
+                    "user_events, event_details, and search_logs over application "
+                    "LOG lines (INFO too, not just errors)."
                 )
             if servers and self._knowledge is not None:
-                s3, a3 = build_knowledge_server(self._knowledge, source="ai")
-                servers.update(s3)
-                allowed = list(allowed) + a3
+                ks, ka = build_knowledge_server(self._knowledge, source=kind)
+                servers.update(ks)
+                allowed += ka
                 prompt += NOTES_PROMPT
+            if servers:
+                prompt += (
+                    "\n\nUse the tools if the context above is not enough to be "
+                    "confident. Keep the final answer in the exact format above, "
+                    "and if the cause is in another service, name that service."
+                )
 
         # dump the prompt so you can inspect it (even while ENABLE_LLM is off)
         log.info("LLM prompt preview:\n%s", prompt)
@@ -117,11 +124,12 @@ class AnalysisService:
         if not self._llm.enabled:
             return None
 
-        rec = await self._llm.complete(prompt, mcp_servers=servers, allowed_tools=allowed)
+        rec = await self._llm.complete(prompt, mcp_servers=servers or None,
+                                       allowed_tools=allowed or None)
         if rec is None:
             return None
         result = ("🤖 " + esc(rec.text)) if rec.text else None
-        llm_id = self._audit.put("ai" if use_tools else "alert", rec,
+        llm_id = self._audit.put(kind, rec,
                                  issue_id=issue_id, chat_id=chat_id) if self._audit else None
         p["llm_meta"] = {"cached": False, "cost": rec.cost, "in": rec.in_tokens,
                          "out": rec.out_tokens, "llm_id": llm_id}
@@ -144,7 +152,7 @@ class AnalysisService:
         p["_loc"] = await self._gitlab.locate_source(p)
         if p.get("_loc"):
             p["blame"] = await self._gitlab.fetch_blame(p["_loc"])
-        analysis = await self.analyze(p, use_tools=True, chat_id=chat_id)
+        analysis = await self.analyze(p, use_tools=True, chat_id=chat_id, kind="ai")
         if not analysis:
             return "Пустой ответ от LLM."
         m = p.get("llm_meta") or {}

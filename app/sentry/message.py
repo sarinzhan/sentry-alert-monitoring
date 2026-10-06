@@ -31,7 +31,7 @@ def build_message(p: dict, analysis: str = None) -> str:
     # affected users — right under the counts line
     if p.get("user_count"):
         lines.append(f"👥 затронуто пользователей: {esc(p['user_count'])}")
-    # LLM explanation — что сломалось / причина / исправление (escalating prod only)
+    # LLM explanation — что сломалось / причина / исправление (on every alert)
     if analysis:
         lines += ["", analysis]
     # the commit message that last touched the crash line

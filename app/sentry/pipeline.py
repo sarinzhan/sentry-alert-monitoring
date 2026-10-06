@@ -118,7 +118,6 @@ class EventPipeline:
 
             # stable key for the per-project window (id preferred over slug/name)
             project_key = p.get("project_id") or raw_project or p.get("project")
-            is_prod = (p.get("environment") or "").lower() == "prod"
             analysis, analysis_done = None, False        # LLM analysis computed at most once
             sent = 0
             for chat_id, thread_id in targets:
@@ -128,20 +127,21 @@ class EventPipeline:
                         chat_id, p["issue_id"], rules, now, forced, project=project_key)
                 if not send:
                     continue
-                # LLM cause/fix only for escalating alerts in prod (computed once, reused)
-                show_llm = status == "escalating" and is_prod
-                if show_llm and not analysis_done:
-                    analysis = await self.analysis.analyze(p)     # sets p["llm_meta"]
+                # LLM cause/fix on EVERY alert (any status, any environment),
+                # agentic: the model may search logs / chase related_errors / read
+                # code before answering. Computed once per event here and cached
+                # per issue+commit inside analyze(), so repeats are cheap.
+                if not analysis_done:
+                    analysis = await self.analysis.analyze(p, use_tools=True)
                     analysis_done = True
-                # per-chat view: counts over this chat's stat windows + matching labels.
-                # Only the escalating message carries the LLM analysis + its cost line.
+                # per-chat view: counts over this chat's stat windows + matching labels
                 pc = dict(p)
                 pc["status"] = status
                 pc["counts"] = self.issues.counts_for(p["issue_id"], rules["stat_windows"], now)
                 pc["stat_labels"] = "/".join(fmt_duration(w) for w in rules["stat_windows"])
-                pc["llm_meta"] = p.get("llm_meta") if show_llm else None
+                pc["llm_meta"] = p.get("llm_meta")
                 msg = await self._send(
-                    build_message(pc, analysis if show_llm else None),
+                    build_message(pc, analysis),
                     chat_id=_as_chat_id(chat_id),
                     message_thread_id=int(thread_id) if thread_id else None)
                 if msg is not None:
