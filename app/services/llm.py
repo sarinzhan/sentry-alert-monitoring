@@ -240,7 +240,11 @@ class LlmClient:
                         rec.turns = getattr(message, "num_turns", 0) or 0
                         rec.session_id = getattr(message, "session_id", None)
         except Exception as e:
-            log.warning("LLM call failed: %s", e)
+            # surface the real reason: log it AND stream it to any live listener
+            # (the web SSE), so the UI shows the cause instead of a generic error.
+            detail = f"{type(e).__name__}: {e}"
+            log.warning("LLM call failed: %s", detail)
+            _emit(on_event, {"type": "error", "error": detail[:500]})
             return None
         rec.duration_ms = int((time.monotonic() - started) * 1000)
         if mode == "subscription":

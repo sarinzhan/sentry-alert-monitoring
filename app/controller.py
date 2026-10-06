@@ -658,6 +658,7 @@ def _stream_llm(request, body, uname, own, label, make_task, on_done=None):
     async def gen():
         yield _sse({"type": "status", "message": "запускаю анализ…"})
         queue = asyncio.Queue()
+        err_detail = None                      # real reason streamed by complete()
         try:
             task = asyncio.create_task(make_task(queue.put_nowait))
         except Exception as e:
@@ -669,12 +670,18 @@ def _stream_llm(request, body, uname, own, label, make_task, on_done=None):
                 done, _ = await asyncio.wait({get, task},
                                              return_when=asyncio.FIRST_COMPLETED)
                 if get in done:
-                    yield _sse(get.result())
+                    ev = get.result()
+                    if ev.get("type") == "error":
+                        err_detail = ev.get("error") or err_detail
+                    yield _sse(ev)
                     continue
                 get.cancel()
                 break
             while not queue.empty():           # drain events raced with finish
-                yield _sse(queue.get_nowait())
+                ev = queue.get_nowait()
+                if ev.get("type") == "error":
+                    err_detail = ev.get("error") or err_detail
+                yield _sse(ev)
             try:
                 rec = task.result()
             except Exception as e:
@@ -683,11 +690,16 @@ def _stream_llm(request, body, uname, own, label, make_task, on_done=None):
                 yield _sse({"type": "error", "error": str(e)[:300]})
                 return
             if rec is None or not rec.text:
-                web_requests.add(body, error="LLM call failed", username=uname,
+                # complete() swallows the SDK error and returns None, but it has
+                # already streamed the real reason as an 'error' event — persist
+                # that and don't clobber it with a generic message.
+                detail = err_detail or "LLM call failed"
+                web_requests.add(body, error=detail[:300], username=uname,
                                  own_token=own)
-                yield _sse({"type": "error",
-                            "error": "Не получилось получить ответ от LLM — "
-                                     "смотрите логи sentry-telegram."})
+                if err_detail is None:
+                    yield _sse({"type": "error",
+                                "error": "Не получилось получить ответ от LLM — "
+                                         "смотрите логи sentry-telegram."})
                 return
             llm_id = llm_audit.put(label, rec)
             web_requests.add(body, rec=rec, llm_id=llm_id, username=uname,
