@@ -9,7 +9,7 @@ the pipeline keeps the cheaper one-shot prompt.
 """
 from app.config import ENABLE_LLM_TOOLS, GITLAB_REF, log
 from app.services.gitlab_tools import build_gitlab_server
-from app.services.sentry_tools import build_sentry_server
+from app.services.sentry_tools import build_sentry_server, fmt_event_details
 from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
 from app.services.llm import money
 from app.utils import esc
@@ -49,6 +49,17 @@ class AnalysisService:
         change = await self._gitlab.fetch_change(loc, blame.get("sha_full")) \
             if (loc and blame.get("sha_full")) else None
 
+        # the webhook payload is often thin (issue-type payloads carry no
+        # stacktrace); pull the full latest event for tags, breadcrumbs (the
+        # user's preceding actions), request and the real stack. Best-effort.
+        event_detail = None
+        if self._sentry is not None and issue_id:
+            ev = await self._sentry.latest_event(issue_id)
+            if ev:
+                event_detail = fmt_event_details(ev)
+                p.setdefault("trace_id",
+                             ((ev.get("contexts") or {}).get("trace") or {}).get("trace_id"))
+
         chain = "\n".join(f"{t}: {v}" for t, v in (p.get("exc_chain") or [])) \
             or f"{p.get('type')}: {p.get('value')}"
         stack = "\n".join(p.get("frames_full") or p.get("frames") or [])
@@ -62,12 +73,19 @@ class AnalysisService:
             "Причина: <почему — изменение кода (кто/какой коммит), некорректный "
             "запрос, проблема данных и т.п.; если не точно — самая вероятная версия>\n"
             "Исправление: <1–2 предложения, что сделать>\n\n"
+            f"Service: {p.get('project') or '?'}\n"
+            f"Title: {p.get('title') or '?'}\n"
             f"Culprit: {p.get('culprit')}\n"
-            f"Environment: {p.get('environment')}\n"
+            f"Environment: {p.get('environment') or '?'}\n"
+            f"Severity: level {p.get('level') or '?'}, {p.get('count') or '?'} events, "
+            f"{p.get('user_count') or '?'} affected users\n"
             + (f"Trace id: {p['trace_id']}\n" if p.get("trace_id") else "")
             + f"Exception chain (most recent last):\n{chain}\n\n"
-            f"Stack (crash site first):\n{stack}"
+            f"Stack (crash site first):\n{stack or '(empty — see the full event below)'}"
         )
+        if event_detail:
+            prompt += ("\n\nFull latest event from Sentry (tags, breadcrumbs = the "
+                       f"user's preceding actions, request):\n{event_detail}")
         if source:
             prompt += f"\n\nCurrent source around the crash site (from GitLab):\n{source}"
         if change:

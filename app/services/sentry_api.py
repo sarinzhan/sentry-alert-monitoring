@@ -320,6 +320,20 @@ class SentryApiClient:
         r.raise_for_status()
         return r.json() or {}
 
+    async def latest_event(self, issue_id):
+        """The full latest event of an issue — stack, tags, breadcrumbs, request
+        — the detail a thin webhook payload (issue-type) doesn't carry. Returns
+        the event dict, or None (best-effort: bad id / 404 / no token)."""
+        if self._api is None or not issue_id:
+            return None
+        try:
+            r = await self._api.get(f"/api/0/issues/{issue_id}/events/latest/")
+            r.raise_for_status()
+            return r.json() or None
+        except Exception as e:
+            log.info("latest_event(%s) unavailable: %s", issue_id, e)
+            return None
+
     async def events_for_trace(self, trace_id: str, limit: int = 20):
         """Error events across ALL projects sharing one trace id."""
         return await self.discover(f"trace:{trace_id}", stats_period="24h",
