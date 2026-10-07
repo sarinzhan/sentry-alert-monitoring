@@ -11,7 +11,8 @@ to the chat's subscribed projects). The classic per-issue error path is untouche
 import time
 import asyncio
 
-from app.config import INCIDENT_WINDOW_SEC, INCIDENT_MAX_MEMBERS, log
+from app.config import (INCIDENT_WINDOW_SEC, INCIDENT_MAX_MEMBERS,
+                        INCIDENT_ENVIRONMENTS, log)
 from app.sentry.message import (build_incident_message, build_incident_resolved,
                                  title_from_analysis)
 
@@ -46,6 +47,13 @@ class IncidentService:
         (the project's subscribers). `get_analysis` lazily yields the shared LLM
         analysis text, reused as the incident's root-cause description."""
         now = now or time.time()
+        # incidents form only for allowed environments (default prod); other envs
+        # still get the regular per-issue alerts, just no incident grouping.
+        if INCIDENT_ENVIRONMENTS:
+            env = (p.get("environment") or "").strip().lower()
+            if env not in INCIDENT_ENVIRONMENTS:
+                log.debug("incident skip env=%s issue=%s", env or "?", p.get("issue_id"))
+                return None
         g = await self._grouper.assign(p, now, INCIDENT_WINDOW_SEC, INCIDENT_MAX_MEMBERS)
         incident_id = g["incident_id"]
         async with self._lock:

@@ -183,6 +183,12 @@ INCIDENT_SWEEP_SEC = int(os.environ.get("INCIDENT_SWEEP_SEC", "60"))
 # Optional cheaper model for the grouping merge-vs-new classification. Empty ->
 # the default ANTHROPIC_MODEL.
 INCIDENT_GROUPING_MODEL = os.environ.get("INCIDENT_GROUPING_MODEL", "").strip() or None
+# Incidents only form/notify for events in these environments (comma-separated,
+# case-insensitive). Default prod — stage/dev errors won't create incidents
+# (regular per-issue alerts are unaffected). Set '*' (or empty) to allow all.
+_inc_envs = os.environ.get("INCIDENT_ENVIRONMENTS", "prod").strip()
+INCIDENT_ENVIRONMENTS = ([] if _inc_envs in ("", "*", "all")
+                         else [e.strip().lower() for e in _inc_envs.split(",") if e.strip()])
 
 # --- LLM (Claude Agent SDK) ---
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
