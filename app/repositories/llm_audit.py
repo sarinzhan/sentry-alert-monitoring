@@ -35,13 +35,19 @@ class LlmAuditRepo:
         return llm_id
 
     @staticmethod
-    def _where(kinds, since, until):
-        """(where-clause, args) shared by list() and totals()."""
+    def _where(kinds, since, until, exclude=None):
+        """(where-clause, args) shared by list() and totals(). `kinds` includes
+        only those kinds; `exclude` drops them (used for the 'user calls' view =
+        everything except the webhook kinds)."""
         clauses, args = [], []
         kinds = list(kinds or [])
+        exclude = list(exclude or [])
         if kinds:
             clauses.append("kind IN (%s)" % ",".join("?" * len(kinds)))
             args += kinds
+        if exclude:
+            clauses.append("kind NOT IN (%s)" % ",".join("?" * len(exclude)))
+            args += exclude
         if since is not None:
             clauses.append("at >= ?")
             args.append(float(since))
@@ -50,14 +56,14 @@ class LlmAuditRepo:
             args.append(float(until))
         return (" WHERE " + " AND ".join(clauses)) if clauses else "", args
 
-    def list(self, kinds=None, limit=100, offset=0, since=None, until=None):
+    def list(self, kinds=None, limit=100, offset=0, since=None, until=None, exclude=None):
         """Recent calls (newest first), optionally filtered by kind and time range
         (since/until = epoch seconds). Summary rows — response preview + tool-call
         count; fetch get(id) for the full step trace."""
         cols = ("id", "at", "kind", "issue_id", "chat_id", "model", "agentic",
                 "turns", "in_tokens", "out_tokens", "cost_usd", "duration_ms",
                 "response", "tool_calls")
-        where, args = self._where(kinds, since, until)
+        where, args = self._where(kinds, since, until, exclude)
         q = f"SELECT {', '.join(cols)} FROM llm_call{where} ORDER BY at DESC LIMIT ? OFFSET ?"
         out = []
         for row in self.db.execute(q, args + [int(limit), int(offset)]).fetchall():
@@ -70,10 +76,10 @@ class LlmAuditRepo:
             out.append(d)
         return out
 
-    def totals(self, kinds=None, since=None, until=None):
+    def totals(self, kinds=None, since=None, until=None, exclude=None):
         """Aggregate over the whole filtered set (ignores paging):
         {count, in_tokens, out_tokens, cost_usd}."""
-        where, args = self._where(kinds, since, until)
+        where, args = self._where(kinds, since, until, exclude)
         row = self.db.execute(
             "SELECT COUNT(*), COALESCE(SUM(in_tokens),0), COALESCE(SUM(out_tokens),0),"
             " COALESCE(SUM(cost_usd),0) FROM llm_call" + where, args).fetchone()

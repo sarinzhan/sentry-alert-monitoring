@@ -1424,8 +1424,9 @@ async def projects_update(pid: str, request: Request):
 
 
 # LLM calls triggered by the Sentry webhook pipeline / incidents (as opposed to
-# the web investigation flows) — the default filter for the «LLM по вебхукам» tab.
-WEBHOOK_LLM_KINDS = ("alert", "group", "resolve")
+# the user-initiated web/telegram flows). Default filter for the «вебхуки» view;
+# the «пользователи» view is everything EXCEPT these.
+WEBHOOK_LLM_KINDS = ("alert", "group", "resolve", "incident-title")
 
 
 @app.get("/api/llm-history")
@@ -1439,9 +1440,11 @@ async def llm_history(request: Request):
     qp = request.query_params
     raw = qp.get("kinds")
     if raw is None:
-        kinds = list(WEBHOOK_LLM_KINDS)
+        kinds = list(WEBHOOK_LLM_KINDS)            # default: webhook view
     else:
         kinds = [k.strip() for k in raw.split(",") if k.strip()]   # empty -> all
+    exc_raw = qp.get("exclude")
+    exclude = [k.strip() for k in exc_raw.split(",") if k.strip()] if exc_raw else None
 
     def _num(name):
         try:
@@ -1455,9 +1458,9 @@ async def llm_history(request: Request):
     except ValueError:
         limit, offset = 100, 0
     return {"calls": audit.list(kinds=kinds, limit=limit, offset=offset,
-                                since=since, until=until),
-            "totals": audit.totals(kinds=kinds, since=since, until=until),
-            "kinds": list(WEBHOOK_LLM_KINDS)}
+                                since=since, until=until, exclude=exclude),
+            "totals": audit.totals(kinds=kinds, since=since, until=until, exclude=exclude),
+            "webhook_kinds": list(WEBHOOK_LLM_KINDS)}
 
 
 @app.get("/api/llm/{llm_id}")

@@ -12,8 +12,22 @@ function fmtTime(sec) {
 }
 
 const KIND_LABEL = {
+  // webhook / incident pipeline
   alert: 'Алерт', group: 'Группировка', resolve: 'Проверка решения',
+  'incident-title': 'Заголовок инцидента',
+  // user-initiated (web + telegram)
+  explain: 'Расследование', 'web-explain': 'Расследование', ask: 'Вопрос',
+  ai: 'AI-разбор', api: 'API-доки', why: 'Почему', activity: 'Активность',
 }
+
+// kinds the backend treats as webhook-originated (for the «пользователи» exclude)
+const WEBHOOK_KINDS = 'alert,group,resolve,incident-title'
+
+const SOURCES = [
+  ['webhook', 'Вебхуки', { kinds: WEBHOOK_KINDS }],
+  ['user', 'Пользователи', { kinds: '', exclude: WEBHOOK_KINDS }],
+  ['all', 'Все', { kinds: '' }],
+]
 
 // readable, scrollable block for tool args/results and the prompt
 const PRE = {
@@ -91,6 +105,7 @@ export default function LlmHistoryPanel({ active }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [open, setOpen] = useState(null)
+  const [source, setSource] = useState('webhook')   // webhook | user | all
   const [from, setFrom] = useState('')   // YYYY-MM-DD (local), '' = no bound
   const [to, setTo] = useState('')
 
@@ -98,11 +113,12 @@ export default function LlmHistoryPanel({ active }) {
     // local day bounds -> epoch seconds
     const since = from ? new Date(`${from}T00:00:00`).getTime() / 1000 : undefined
     const until = to ? new Date(`${to}T23:59:59`).getTime() / 1000 : undefined
-    try { setData(await getLlmHistory({ since, until })) }
+    const src = (SOURCES.find((s) => s[0] === source) || SOURCES[0])[2]
+    try { setData(await getLlmHistory({ ...src, since, until })) }
     catch (e) { setError(e.message) }
   }
 
-  useEffect(() => { if (active) load() }, [active, from, to])
+  useEffect(() => { if (active) load() }, [active, source, from, to])
 
   function lastDays(n) {
     const t = new Date(), f = new Date()
@@ -119,10 +135,18 @@ export default function LlmHistoryPanel({ active }) {
   return (
     <div>
       <p className="sub">
-        Вызовы LLM из обработки вебхуков Sentry: разбор алертов, группировка
-        инцидентов, проверка решения. Разверните запись, чтобы увидеть шаги —
-        какие инструменты вызывал LLM, с какими аргументами и что получил.
+        Вызовы LLM: по вебхукам Sentry (разбор алертов, группировка инцидентов,
+        проверка решения) и пользовательские (расследования, вопросы, /ai).
+        Разверните запись, чтобы увидеть шаги — какие инструменты вызывал LLM,
+        с какими аргументами и что получил.
       </p>
+
+      <div className="actions" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+        {SOURCES.map(([k, label]) => (
+          <button key={k} type="button" className={source === k ? 'tab active' : 'tab'}
+                  onClick={() => setSource(k)}>{label}</button>
+        ))}
+      </div>
 
       <div className="actions" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
         <label className="hint">с <input type="date" value={from}

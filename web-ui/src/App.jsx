@@ -168,7 +168,7 @@ export default function App() {
           <button className={view === 'notes' ? 'tab active' : 'tab'}
                   onClick={() => setView('notes')}>Заметки LLM</button>
           <button className={view === 'llmhist' ? 'tab active' : 'tab'}
-                  onClick={() => setView('llmhist')}>LLM по вебхукам</button>
+                  onClick={() => setView('llmhist')}>Вызовы LLM</button>
           <button className={view === 'usage' ? 'tab active' : 'tab'}
                   onClick={() => setView('usage')}>Статистика</button>
           <button className={view === 'ask' ? 'tab active' : 'tab'}
@@ -293,7 +293,7 @@ export default function App() {
         <NotesPanel active={view === 'notes'} />
       </div>
       <div hidden={view !== 'llmhist'}>
-        <h1>LLM по вебхукам</h1>
+        <h1>Вызовы LLM</h1>
         <LlmHistoryPanel active={view === 'llmhist'} />
       </div>
       <div hidden={view !== 'search'}>

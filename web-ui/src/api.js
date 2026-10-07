@@ -123,9 +123,10 @@ export const deleteNote = (id) => req('DELETE', `notes/${id}`)
 // --- LLM call history for the Sentry webhook pipeline (alert/group/resolve) ---
 // list: {calls, totals:{count,in_tokens,out_tokens,cost_usd}, kinds}
 // opts: {kinds?, since?, until?} — since/until are epoch seconds
-export const getLlmHistory = ({ kinds, since, until } = {}) => {
+export const getLlmHistory = ({ kinds, exclude, since, until } = {}) => {
   const q = new URLSearchParams()
   if (kinds != null) q.set('kinds', kinds)
+  if (exclude != null) q.set('exclude', exclude)
   if (since != null) q.set('since', Math.floor(since))
   if (until != null) q.set('until', Math.floor(until))
   const s = q.toString()
