@@ -1000,6 +1000,24 @@ async def llm_gap_delete(request: Request, gap_id: int):
     return {"removed": request.app.state.gaps.delete(gap_id)}
 
 
+# --- LLM notes memory (navigation hints the model saves between runs) --------
+@app.get("/api/notes")
+async def notes_list(request: Request):
+    """The LLM's persistent notes (the knowledge memory) — what it has learned
+    about where to look in this system. Read view of the /notes command."""
+    repo = request.app.state.knowledge.repo
+    notes = [{"id": n["id"], "topic": n["topic"], "content": n["content"],
+              "source": n["source"], "created": n["created"], "updated": n["updated"],
+              "embedded": bool(n.get("emb_model"))} for n in repo.list_all()]
+    return {"notes": notes}
+
+
+@app.delete("/api/notes/{note_id}")
+async def note_delete(request: Request, note_id: int):
+    """Remove a stale/incorrect note."""
+    return {"removed": request.app.state.knowledge.repo.delete(note_id)}
+
+
 # --- incidents (read-only view for any logged-in user) -----------------------
 @app.get("/api/incidents")
 async def incidents_list(request: Request):

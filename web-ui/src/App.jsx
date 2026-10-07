@@ -8,6 +8,7 @@ import SettingsPanel from './SettingsPanel.jsx'
 import TelegramChatsPanel from './TelegramChatsPanel.jsx'
 import IncidentsPanel from './IncidentsPanel.jsx'
 import GapsPanel from './GapsPanel.jsx'
+import NotesPanel from './NotesPanel.jsx'
 import PromptsPanel from './PromptsPanel.jsx'
 import AskPanel from './AskPanel.jsx'
 import UsagePanel from './UsagePanel.jsx'
@@ -163,6 +164,8 @@ export default function App() {
                   onClick={() => setView('incidents')}>Инциденты</button>
           <button className={view === 'gaps' ? 'tab active' : 'tab'}
                   onClick={() => setView('gaps')}>Что нужно LLM</button>
+          <button className={view === 'notes' ? 'tab active' : 'tab'}
+                  onClick={() => setView('notes')}>Заметки LLM</button>
           <button className={view === 'usage' ? 'tab active' : 'tab'}
                   onClick={() => setView('usage')}>Статистика</button>
           <button className={view === 'ask' ? 'tab active' : 'tab'}
@@ -281,6 +284,10 @@ export default function App() {
       <div hidden={view !== 'gaps'}>
         <h1>Что нужно LLM</h1>
         <GapsPanel active={view === 'gaps'} />
+      </div>
+      <div hidden={view !== 'notes'}>
+        <h1>Заметки LLM</h1>
+        <NotesPanel active={view === 'notes'} />
       </div>
       <div hidden={view !== 'search'}>
       <h1>Расследование проблемы</h1>

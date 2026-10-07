@@ -116,6 +116,10 @@ export const getIncident = (id) => get(`incidents/${id}`)
 export const getLlmGaps = () => get('llm-gaps')
 export const dismissLlmGap = (id) => req('DELETE', `llm-gaps/${id}`)
 
+// --- LLM notes memory (navigation hints the model saves between runs) ---
+export const getNotes = () => get('notes').then((d) => d.notes)
+export const deleteNote = (id) => req('DELETE', `notes/${id}`)
+
 export const getHistory = () => get('history').then((d) => d.requests)
 // per-day LLM usage split shared/personal token; username — admin only
 export const getUsage = (period, username) =>
