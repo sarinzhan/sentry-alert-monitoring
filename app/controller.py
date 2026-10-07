@@ -55,6 +55,7 @@ from app.sentry.decision import Decider
 from app.sentry.analysis import AnalysisService
 from app.sentry.grouper import Grouper
 from app.sentry.incidents import IncidentService
+from app.sentry.message import title_from_analysis
 from app.sentry.pipeline import EventPipeline
 from app.telegram.bot import ChatBotHandler
 from app.telegram.deps import Deps
@@ -1030,8 +1031,12 @@ async def incidents_list(request: Request):
         limit = min(int(request.query_params.get("limit") or 200), 1000)
     except ValueError:
         limit = 200
-    return {"incidents": repo.list(limit=limit, status=status),
-            "group_enabled": GROUP_ENABLED}
+    items = repo.list(limit=limit, status=status)
+    for it in items:                      # prefer the LLM title from the analysis
+        llm = title_from_analysis(it.pop("description", None))
+        if llm:
+            it["title"] = llm
+    return {"incidents": items, "group_enabled": GROUP_ENABLED}
 
 
 @app.get("/api/incidents/{incident_id}")

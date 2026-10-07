@@ -164,7 +164,8 @@ def build_incident_resolved(inc, members, now=None) -> str:
     iid = inc.get("incident_id")
     n = inc.get("member_count") or len(members)
     projects = esc(inc.get("projects") or "?")
-    title = esc(readable_title(inc.get("title")) or "Инцидент")
+    title = esc(title_from_analysis(inc.get("description"))
+                or readable_title(inc.get("title")) or "Инцидент")
     by, kind = inc.get("resolved_by"), inc.get("resolved_kind")
     who = f"@{esc(by)}" if by else ("автоматически" if kind == "auto" else "вручную")
     dur = ""
