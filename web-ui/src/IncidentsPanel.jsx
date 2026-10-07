@@ -154,7 +154,8 @@ export default function IncidentsPanel({ active }) {
           <h2 style={{ cursor: 'pointer' }}
               onClick={() => setOpen(open === inc.incident_id ? null : inc.incident_id)}>
             {open === inc.incident_id ? '▾' : '▸'}{' '}
-            <code>#{inc.incident_id}</code> {inc.title || 'Инцидент'}{' '}
+            <code>#{inc.incident_id}</code>{' '}
+            <span title={inc.title || ''}>{readableTitle(inc.title) || 'Инцидент'}</span>{' '}
             <StatusBadge status={inc.status} />
           </h2>
           <div className="hint">

@@ -1,4 +1,6 @@
 """build_message — render one parsed event into the Telegram HTML alert."""
+import re
+
 from app.config import STAT_WINDOWS
 from app.summaries import fmt_duration
 from app.services.llm import money
@@ -12,6 +14,23 @@ STAT_LABELS = "/".join(fmt_duration(w) for w in STAT_WINDOWS)
 
 # how many grouped issues to list inside an incident message
 INCIDENT_RELATED_MAX = 10
+
+_DETAIL = re.compile(r"detail='([^']+)'")
+
+
+def readable_title(t: str, limit: int = 160) -> str:
+    """Sentry titles are often a giant exception dump. Pull out the human part —
+    the error class + its detail='…' message when present, else the first line,
+    truncated. Plain text (caller escapes)."""
+    t = (t or "").strip()
+    if not t:
+        return ""
+    m = _DETAIL.search(t)
+    if m:
+        cls = re.split(r"[:{(]", t, 1)[0].strip()
+        return f"{cls}: {m.group(1)}" if cls else m.group(1)
+    head = t.splitlines()[0].strip()
+    return head if len(head) <= limit else head[:limit] + "…"
 
 
 def build_message(p: dict, analysis: str = None) -> str:
@@ -110,8 +129,11 @@ def build_incident_message(inc, members, analysis=None, events=None, users=None,
     if members:
         lines += ["", "<b>Связанные ошибки:</b>"]
         for m in members[:INCIDENT_RELATED_MAX]:
-            s = f"<code>#{esc(m.get('short'))}</code> " if m.get("short") else ""
-            lines.append(f"{s}{esc((m.get('title') or '')[:120])}")
+            short = esc(m.get("short") or "")
+            tag = (f'<a href="{esc(m["url"])}">#{short}</a>'
+                   if m.get("url") else (f"<code>#{short}</code>" if short else ""))
+            title = esc(readable_title(m.get("title"), 120))
+            lines.append(f"{tag} {title}".strip())
         if len(members) > INCIDENT_RELATED_MAX:
             lines.append(f"… и ещё {len(members) - INCIDENT_RELATED_MAX}")
 
@@ -126,7 +148,7 @@ def build_incident_resolved(inc, members, now=None) -> str:
     iid = inc.get("incident_id")
     n = inc.get("member_count") or len(members)
     projects = esc(inc.get("projects") or "?")
-    title = esc(inc.get("title") or "Инцидент")
+    title = esc(readable_title(inc.get("title")) or "Инцидент")
     by, kind = inc.get("resolved_by"), inc.get("resolved_kind")
     who = f"@{esc(by)}" if by else ("автоматически" if kind == "auto" else "вручную")
     dur = ""
