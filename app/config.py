@@ -165,7 +165,7 @@ if len(STAT_WINDOWS) != 3:
 # (incident_enabled), scoped to the chat's subscribed projects. Grouping runs once
 # per issue at ingestion; the deterministic signature handles the obvious cases and
 # the LLM only breaks ties, so steady-state cost is ~zero.
-GROUP_ENABLED = os.environ.get("GROUP_ENABLED", "false").lower() == "true"
+GROUP_ENABLED = os.environ.get("GROUP_ENABLED", "true").lower() == "true"
 # Incident activity window: how long an open incident keeps absorbing new issues,
 # and the auto-resolve timeout — an open incident with no new error for a full
 # window is auto-resolved. Org-scoped (a property of the incident itself).
