@@ -49,6 +49,8 @@ class Grouper:
         issue_id = p.get("issue_id")
         sig = signature(p)
         project = p.get("project")
+        pid = p.get("project_id")
+        project_id = str(pid) if pid is not None else None
         title = p.get("title") or p.get("type") or "?"
         short = p.get("short")
 
@@ -60,21 +62,25 @@ class Grouper:
 
             match = self._inc.signature_match(sig, now, window_sec)   # fast-path
             if match is not None:
-                new_project = self._inc.add_member(match, issue_id, sig, project, title, short, now)
+                new_project = self._inc.add_member(match, issue_id, sig, project,
+                                                   title, short, now, project_id=project_id)
                 return {"incident_id": match, "is_lead": False, "new_project": new_project}
 
             openinc = self._inc.open_incidents(now, window_sec)
             if not openinc:                                # nothing to merge into
-                iid = self._inc.create(issue_id, sig, project, title, short, now)
+                iid = self._inc.create(issue_id, sig, project, title, short, now,
+                                       project_id=project_id)
                 return {"incident_id": iid, "is_lead": True, "new_project": True}
 
             target = await self._classify(p, openinc)      # LLM tie-breaker
             cur = next((o for o in openinc if o["incident_id"] == target), None)
             if cur is not None and cur["member_count"] < max_members:
-                new_project = self._inc.add_member(target, issue_id, sig, project, title, short, now)
+                new_project = self._inc.add_member(target, issue_id, sig, project,
+                                                   title, short, now, project_id=project_id)
                 return {"incident_id": target, "is_lead": False, "new_project": new_project}
 
-            iid = self._inc.create(issue_id, sig, project, title, short, now)
+            iid = self._inc.create(issue_id, sig, project, title, short, now,
+                                   project_id=project_id)
             return {"incident_id": iid, "is_lead": True, "new_project": True}
 
     async def _classify(self, p, openinc):

@@ -65,12 +65,22 @@ class IncidentService:
                                 incident_id, chat_id, e)
         return incident_id
 
+    def _scope_ids(self, chat_id, members):
+        """Member issue_ids in THIS chat's subscribed projects — so significance
+        reflects the chat's own blast radius, not the whole cross-service total.
+        A '*' (all-projects) subscription matches every member."""
+        subs = set(self._subs.list_for(chat_id))
+        if "*" in subs:
+            return [m["issue_id"] for m in members]
+        return [m["issue_id"] for m in members
+                if str(m.get("project_id") or "") in subs or (m.get("project") or "") in subs]
+
     async def _notify_chat(self, incident_id, chat_id, thread_id, rules, g, p, get_analysis, now):
         window = rules.get("incident_window_sec") or INCIDENT_WINDOW_SEC
         err_thr = rules.get("incident_error_threshold")
         usr_thr = rules.get("incident_user_threshold")
-        member_ids = self._inc.member_issue_ids(incident_id)
-        events, users = self._issues.agg_stats(member_ids, window, now)
+        scope_ids = self._scope_ids(chat_id, self._inc.members(incident_id))
+        events, users = self._issues.agg_stats(scope_ids, window, now)
         significant = ((err_thr is not None and events > err_thr) or
                        (usr_thr is not None and users >= usr_thr))
         thread = int(thread_id) if thread_id else None

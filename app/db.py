@@ -372,10 +372,14 @@ class Database:
         db.execute(
             "CREATE TABLE IF NOT EXISTS incident_member ("
             " incident_id INTEGER NOT NULL, issue_id TEXT NOT NULL,"
-            " signature TEXT, project TEXT, title TEXT, short TEXT, joined_at REAL NOT NULL,"
-            " PRIMARY KEY (incident_id, issue_id))"
+            " signature TEXT, project TEXT, project_id TEXT, title TEXT, short TEXT,"
+            " joined_at REAL NOT NULL, PRIMARY KEY (incident_id, issue_id))"
         )
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_incident_member_issue ON incident_member(issue_id)")
+        try:    # per-project incident significance needs the member's project id
+            db.execute("ALTER TABLE incident_member ADD COLUMN project_id TEXT")
+        except sqlite3.OperationalError:
+            pass
         # the live incident message per chat — edited in place as it grows, deleted on resolve
         db.execute(
             "CREATE TABLE IF NOT EXISTS incident_message ("

@@ -93,20 +93,21 @@ class IncidentRepo:
         return [dict(zip(keys, r)) for r in self.db.execute(q, args).fetchall()]
 
     def members(self, incident_id):
-        """All grouped issues of an incident: [{issue_id, signature, project, title,
-        short, joined_at}], in join order."""
+        """All grouped issues of an incident: [{issue_id, signature, project,
+        project_id, title, short, joined_at}], in join order."""
         rows = self.db.execute(
-            "SELECT issue_id, signature, project, title, short, joined_at"
+            "SELECT issue_id, signature, project, project_id, title, short, joined_at"
             " FROM incident_member WHERE incident_id=? ORDER BY joined_at", (incident_id,)).fetchall()
-        return [{"issue_id": r[0], "signature": r[1], "project": r[2], "title": r[3],
-                 "short": r[4], "joined_at": r[5]} for r in rows]
+        return [{"issue_id": r[0], "signature": r[1], "project": r[2], "project_id": r[3],
+                 "title": r[4], "short": r[5], "joined_at": r[6]} for r in rows]
 
     def member_issue_ids(self, incident_id):
         return [r[0] for r in self.db.execute(
             "SELECT issue_id FROM incident_member WHERE incident_id=?", (incident_id,)).fetchall()]
 
     # ------------------------------------------------------------ mutations
-    def create(self, lead_issue_id, signature, project, title, short, now=None):
+    def create(self, lead_issue_id, signature, project, title, short, now=None,
+               project_id=None):
         """Open a new incident with `lead_issue_id` as its first member. Returns the id."""
         now = now or time.time()
         cur = self.db.execute(
@@ -116,18 +117,19 @@ class IncidentRepo:
         incident_id = cur.lastrowid
         self.db.execute(
             "INSERT OR IGNORE INTO incident_member(incident_id, issue_id, signature,"
-            " project, title, short, joined_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (incident_id, lead_issue_id, signature, project, title, short, now))
+            " project, project_id, title, short, joined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (incident_id, lead_issue_id, signature, project, project_id, title, short, now))
         self.db.commit()
         return incident_id
 
-    def add_member(self, incident_id, issue_id, signature, project, title, short, now=None):
+    def add_member(self, incident_id, issue_id, signature, project, title, short,
+                   now=None, project_id=None):
         """Fold an issue into an incident. Returns True if it brought a NEW project."""
         now = now or time.time()
         self.db.execute(
             "INSERT OR IGNORE INTO incident_member(incident_id, issue_id, signature,"
-            " project, title, short, joined_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (incident_id, issue_id, signature, project, title, short, now))
+            " project, project_id, title, short, joined_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (incident_id, issue_id, signature, project, project_id, title, short, now))
         row = self.db.execute(
             "SELECT projects FROM incident WHERE incident_id=?", (incident_id,)).fetchone()
         projects, is_new = _merge_projects(row[0] if row else "", project)
