@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
     app.state.chat_meta = chat_meta
 
     app.state.incidents = incident_service
+    app.state.incidents_repo = incidents_repo
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
 
@@ -958,6 +959,33 @@ def _parse_rule(kind, raw):
     if len(secs) != 3 or any(v is None or v <= 0 for v in secs):
         return None, "нужно ровно 3 окна (напр. 12h/6h/10m)"
     return ",".join(str(v) for v in secs), None
+
+
+# --- incidents (read-only view for any logged-in user) -----------------------
+@app.get("/api/incidents")
+async def incidents_list(request: Request):
+    """All incidents (open first), newest activity first. ?status=open|resolved
+    filters; ?limit= caps the count."""
+    repo = request.app.state.incidents_repo
+    status = request.query_params.get("status")
+    try:
+        limit = min(int(request.query_params.get("limit") or 200), 1000)
+    except ValueError:
+        limit = 200
+    return {"incidents": repo.list(limit=limit, status=status),
+            "group_enabled": GROUP_ENABLED}
+
+
+@app.get("/api/incidents/{incident_id}")
+async def incident_detail(request: Request, incident_id: int):
+    """One incident with its grouped issues and live-message targets."""
+    repo = request.app.state.incidents_repo
+    inc = repo.get(incident_id)
+    if not inc:
+        return JSONResponse({"error": "инцидент не найден"}, status_code=404)
+    inc["members"] = repo.members(incident_id)
+    inc["messages"] = repo.all_messages(incident_id)
+    return inc
 
 
 @app.get("/api/telegram/chats")

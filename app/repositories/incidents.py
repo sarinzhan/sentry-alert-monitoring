@@ -75,6 +75,23 @@ class IncidentRepo:
                 "resolved_kind")
         return dict(zip(keys, row))
 
+    def list(self, limit=200, status=None):
+        """Incidents for the web panel — open first, then most-recent activity.
+        status filters to 'open' or 'resolved'; None returns both."""
+        q = ("SELECT incident_id, status, title, projects, member_count, opened_at,"
+             " last_member_at, resolved_at, resolved_by, resolved_kind, resolution"
+             " FROM incident")
+        args = []
+        if status in ("open", "resolved"):
+            q += " WHERE status=?"
+            args.append(status)
+        q += " ORDER BY (status='open') DESC, last_member_at DESC LIMIT ?"
+        args.append(int(limit))
+        keys = ("incident_id", "status", "title", "projects", "member_count",
+                "opened_at", "last_member_at", "resolved_at", "resolved_by",
+                "resolved_kind", "resolution")
+        return [dict(zip(keys, r)) for r in self.db.execute(q, args).fetchall()]
+
     def members(self, incident_id):
         """All grouped issues of an incident: [{issue_id, signature, project, title,
         short, joined_at}], in join order."""

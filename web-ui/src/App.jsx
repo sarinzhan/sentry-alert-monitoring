@@ -6,6 +6,7 @@ import HistoryPanel from './HistoryPanel.jsx'
 import UsersPanel from './UsersPanel.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import TelegramChatsPanel from './TelegramChatsPanel.jsx'
+import IncidentsPanel from './IncidentsPanel.jsx'
 import PromptsPanel from './PromptsPanel.jsx'
 import AskPanel from './AskPanel.jsx'
 import UsagePanel from './UsagePanel.jsx'
@@ -157,6 +158,8 @@ export default function App() {
                   onClick={() => setView('search')}>Расследование</button>
           <button className={view === 'history' ? 'tab active' : 'tab'}
                   onClick={() => setView('history')}>История</button>
+          <button className={view === 'incidents' ? 'tab active' : 'tab'}
+                  onClick={() => setView('incidents')}>Инциденты</button>
           <button className={view === 'usage' ? 'tab active' : 'tab'}
                   onClick={() => setView('usage')}>Статистика</button>
           <button className={view === 'ask' ? 'tab active' : 'tab'}
@@ -267,6 +270,10 @@ export default function App() {
       <div hidden={view !== 'history'}>
         <h1>История анализов</h1>
         <HistoryPanel active={view === 'history'} />
+      </div>
+      <div hidden={view !== 'incidents'}>
+        <h1>Инциденты</h1>
+        <IncidentsPanel active={view === 'incidents'} />
       </div>
       <div hidden={view !== 'search'}>
       <h1>Расследование проблемы</h1>

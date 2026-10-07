@@ -106,6 +106,12 @@ export const tgSaveRules = (chat_id, body) =>
 export const tgResetRules = (chat_id) =>
   post('telegram/chats/rules/reset', { chat_id })
 
+// --- incidents (read-only, any logged-in user) ---
+// {incidents: [...], group_enabled}
+export const getIncidents = (status) =>
+  get(`incidents${status ? `?status=${encodeURIComponent(status)}` : ''}`)
+export const getIncident = (id) => get(`incidents/${id}`)
+
 export const getHistory = () => get('history').then((d) => d.requests)
 // per-day LLM usage split shared/personal token; username — admin only
 export const getUsage = (period, username) =>
