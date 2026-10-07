@@ -10,6 +10,19 @@ function fmtTime(sec) {
   return new Date(sec * 1000).toLocaleString('ru')
 }
 
+// the Sentry title is often a giant exception dump; pull out the human part —
+// the error class + its `detail='…'` message when present, else the first line.
+function readableTitle(t) {
+  if (!t) return '—'
+  const detail = t.match(/detail='([^']+)'/)
+  if (detail) {
+    const cls = t.split(/[:{(]/)[0].trim()
+    return `${cls}: ${detail[1]}`
+  }
+  const head = t.split('\n')[0].trim()
+  return head.length > 160 ? head.slice(0, 160) + '…' : head
+}
+
 function fmtDur(sec) {
   sec = Math.max(0, Math.round(Number(sec) || 0))
   const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600)
@@ -63,14 +76,21 @@ function Detail({ id }) {
         <label><b>Связанные ошибки ({inc.members?.length || 0})</b></label>
         <table className="tbl">
           <thead>
-            <tr><th>#</th><th>Проект</th><th>Заголовок</th><th>Добавлена</th></tr>
+            <tr><th>#</th><th>Проект</th><th>Заголовок</th><th>События</th><th>Добавлена</th></tr>
           </thead>
           <tbody>
             {(inc.members || []).map((m) => (
               <tr key={m.issue_id}>
-                <td><code>#{m.short || '—'}</code></td>
+                <td>
+                  {m.url
+                    ? <a href={m.url} target="_blank" rel="noreferrer"><code>#{m.short || '—'}</code></a>
+                    : <code>#{m.short || '—'}</code>}
+                </td>
                 <td>{m.project || '—'}</td>
-                <td>{m.title || '—'}</td>
+                <td title={m.title || ''}>{readableTitle(m.title)}</td>
+                <td className="hint">
+                  {m.events ?? '—'}{m.users ? ` · ${m.users}👤` : ''}
+                </td>
                 <td className="hint">{fmtTime(m.joined_at)}</td>
               </tr>
             ))}

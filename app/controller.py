@@ -24,7 +24,7 @@ from app.config import (ANTHROPIC_MODEL, AUTH_SESSION_HOURS, BOT_TOKEN,
                         LLM_DAILY_LIMIT, LLM_DAILY_TOKENS, TELEGRAM_POLLING,
                         TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, WEB_LLM_MODELS,
                         DEFAULT_RULES, ALERT_STATUSES, GROUP_ENABLED,
-                        INCIDENT_SWEEP_SEC, GITLAB_URL, log)
+                        INCIDENT_SWEEP_SEC, INCIDENT_WINDOW_SEC, GITLAB_URL, log)
 from app.summaries import banner, parse_duration
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -140,6 +140,7 @@ async def lifespan(app: FastAPI):
 
     app.state.incidents = incident_service
     app.state.incidents_repo = incidents_repo
+    app.state.issues = issues
     app.state.gaps = gaps
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
@@ -1040,7 +1041,14 @@ async def incident_detail(request: Request, incident_id: int):
     inc = repo.get(incident_id)
     if not inc:
         return JSONResponse({"error": "инцидент не найден"}, status_code=404)
-    inc["members"] = repo.members(incident_id)
+    issues = request.app.state.issues
+    now = time.time()
+    members = repo.members(incident_id)
+    for m in members:                       # per-issue occurrence stats over the window
+        events, users = issues.agg_stats([m["issue_id"]], INCIDENT_WINDOW_SEC, now)
+        m["events"] = events
+        m["users"] = users
+    inc["members"] = members
     inc["messages"] = repo.all_messages(incident_id)
     return inc
 
