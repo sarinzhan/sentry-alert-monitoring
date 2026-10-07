@@ -84,20 +84,37 @@ function Detail({ id }) {
   )
 }
 
+const ymd = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
 export default function LlmHistoryPanel({ active }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [open, setOpen] = useState(null)
+  const [from, setFrom] = useState('')   // YYYY-MM-DD (local), '' = no bound
+  const [to, setTo] = useState('')
 
   async function load() {
-    try { setData(await getLlmHistory()) }
+    // local day bounds -> epoch seconds
+    const since = from ? new Date(`${from}T00:00:00`).getTime() / 1000 : undefined
+    const until = to ? new Date(`${to}T23:59:59`).getTime() / 1000 : undefined
+    try { setData(await getLlmHistory({ since, until })) }
     catch (e) { setError(e.message) }
   }
 
-  useEffect(() => { if (active) load() }, [active])
+  useEffect(() => { if (active) load() }, [active, from, to])
+
+  function lastDays(n) {
+    const t = new Date(), f = new Date()
+    f.setDate(f.getDate() - (n - 1))
+    setFrom(ymd(f)); setTo(ymd(t))
+  }
+  function allTime() { setFrom(''); setTo('') }
 
   if (error) return <div className="error">{error}</div>
   if (!data) return <div className="empty">Загружаю…</div>
+
+  const t = data.totals || {}
 
   return (
     <div>
@@ -106,8 +123,25 @@ export default function LlmHistoryPanel({ active }) {
         инцидентов, проверка решения. Разверните запись, чтобы увидеть шаги —
         какие инструменты вызывал LLM, с какими аргументами и что получил.
       </p>
-      <div className="actions">
+
+      <div className="actions" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+        <label className="hint">с <input type="date" value={from}
+               onChange={(e) => setFrom(e.target.value)} /></label>
+        <label className="hint">по <input type="date" value={to}
+               onChange={(e) => setTo(e.target.value)} /></label>
+        <button type="button" className="tab" onClick={() => lastDays(1)}>Сегодня</button>
+        <button type="button" className="tab" onClick={() => lastDays(7)}>7 дней</button>
+        <button type="button" className="tab" onClick={() => lastDays(30)}>30 дней</button>
+        <button type="button" className="tab" onClick={allTime}>Всё</button>
         <button type="button" className="tab" onClick={load}>Обновить</button>
+      </div>
+
+      <div className="results" style={{ padding: '.5rem .75rem', margin: '.5rem 0' }}>
+        <b>Запросов: {t.count || 0}</b>{' · '}
+        вход: {(t.in_tokens || 0).toLocaleString('ru')}{' · '}
+        выход: {(t.out_tokens || 0).toLocaleString('ru')}{' · '}
+        всего: {((t.in_tokens || 0) + (t.out_tokens || 0)).toLocaleString('ru')} токенов
+        {t.cost_usd ? ` · $${Number(t.cost_usd).toFixed(4)}` : ''}
       </div>
 
       {data.calls.length === 0 && <div className="empty">Пока нет вызовов.</div>}

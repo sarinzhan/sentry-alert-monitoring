@@ -121,9 +121,16 @@ export const getNotes = () => get('notes').then((d) => d.notes)
 export const deleteNote = (id) => req('DELETE', `notes/${id}`)
 
 // --- LLM call history for the Sentry webhook pipeline (alert/group/resolve) ---
-// list: {calls:[...summary], kinds:[...]}; detail: full record incl. tool trace
-export const getLlmHistory = (kinds) =>
-  get(`llm-history${kinds != null ? `?kinds=${encodeURIComponent(kinds)}` : ''}`)
+// list: {calls, totals:{count,in_tokens,out_tokens,cost_usd}, kinds}
+// opts: {kinds?, since?, until?} — since/until are epoch seconds
+export const getLlmHistory = ({ kinds, since, until } = {}) => {
+  const q = new URLSearchParams()
+  if (kinds != null) q.set('kinds', kinds)
+  if (since != null) q.set('since', Math.floor(since))
+  if (until != null) q.set('until', Math.floor(until))
+  const s = q.toString()
+  return get(`llm-history${s ? `?${s}` : ''}`)
+}
 export const getLlmCall = (id) => get(`llm/${id}`)
 
 export const getHistory = () => get('history').then((d) => d.requests)

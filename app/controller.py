@@ -1436,17 +1436,27 @@ async def llm_history(request: Request):
     preview + tool-call count; open one via GET /api/llm/{id} for the full
     step trace (tool name, arguments, result)."""
     audit = request.app.state.llm_audit
-    raw = request.query_params.get("kinds")
+    qp = request.query_params
+    raw = qp.get("kinds")
     if raw is None:
         kinds = list(WEBHOOK_LLM_KINDS)
     else:
         kinds = [k.strip() for k in raw.split(",") if k.strip()]   # empty -> all
+
+    def _num(name):
+        try:
+            return float(qp[name]) if qp.get(name) else None
+        except ValueError:
+            return None
+    since, until = _num("since"), _num("until")
     try:
-        limit = min(int(request.query_params.get("limit") or 100), 500)
-        offset = max(int(request.query_params.get("offset") or 0), 0)
+        limit = min(int(qp.get("limit") or 100), 500)
+        offset = max(int(qp.get("offset") or 0), 0)
     except ValueError:
         limit, offset = 100, 0
-    return {"calls": audit.list(kinds=kinds, limit=limit, offset=offset),
+    return {"calls": audit.list(kinds=kinds, limit=limit, offset=offset,
+                                since=since, until=until),
+            "totals": audit.totals(kinds=kinds, since=since, until=until),
             "kinds": list(WEBHOOK_LLM_KINDS)}
 
 

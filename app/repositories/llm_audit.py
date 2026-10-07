@@ -34,23 +34,33 @@ class LlmAuditRepo:
         self.db.commit()
         return llm_id
 
-    def list(self, kinds=None, limit=100, offset=0):
-        """Recent calls (newest first), optionally filtered to a set of kinds.
-        Summary rows for a history list — no full prompt/trace, but a response
-        preview and the tool-call count; fetch get(id) for the full step trace."""
+    @staticmethod
+    def _where(kinds, since, until):
+        """(where-clause, args) shared by list() and totals()."""
+        clauses, args = [], []
+        kinds = list(kinds or [])
+        if kinds:
+            clauses.append("kind IN (%s)" % ",".join("?" * len(kinds)))
+            args += kinds
+        if since is not None:
+            clauses.append("at >= ?")
+            args.append(float(since))
+        if until is not None:
+            clauses.append("at <= ?")
+            args.append(float(until))
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", args
+
+    def list(self, kinds=None, limit=100, offset=0, since=None, until=None):
+        """Recent calls (newest first), optionally filtered by kind and time range
+        (since/until = epoch seconds). Summary rows — response preview + tool-call
+        count; fetch get(id) for the full step trace."""
         cols = ("id", "at", "kind", "issue_id", "chat_id", "model", "agentic",
                 "turns", "in_tokens", "out_tokens", "cost_usd", "duration_ms",
                 "response", "tool_calls")
-        q = f"SELECT {', '.join(cols)} FROM llm_call"
-        args = []
-        kinds = list(kinds or [])
-        if kinds:
-            q += " WHERE kind IN (%s)" % ",".join("?" * len(kinds))
-            args += kinds
-        q += " ORDER BY at DESC LIMIT ? OFFSET ?"
-        args += [int(limit), int(offset)]
+        where, args = self._where(kinds, since, until)
+        q = f"SELECT {', '.join(cols)} FROM llm_call{where} ORDER BY at DESC LIMIT ? OFFSET ?"
         out = []
-        for row in self.db.execute(q, args).fetchall():
+        for row in self.db.execute(q, args + [int(limit), int(offset)]).fetchall():
             d = dict(zip(cols, row))
             d["agentic"] = bool(d["agentic"])
             calls = json.loads(d.pop("tool_calls") or "[]")
@@ -59,6 +69,16 @@ class LlmAuditRepo:
             d["preview"] = resp[:200] + ("…" if len(resp) > 200 else "")
             out.append(d)
         return out
+
+    def totals(self, kinds=None, since=None, until=None):
+        """Aggregate over the whole filtered set (ignores paging):
+        {count, in_tokens, out_tokens, cost_usd}."""
+        where, args = self._where(kinds, since, until)
+        row = self.db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(in_tokens),0), COALESCE(SUM(out_tokens),0),"
+            " COALESCE(SUM(cost_usd),0) FROM llm_call" + where, args).fetchone()
+        return {"count": row[0], "in_tokens": row[1], "out_tokens": row[2],
+                "cost_usd": row[3]}
 
     def get(self, ref):
         """Full record dict by id — accepts 'llm_a1b2c3' or 'a1b2c3', any case."""
