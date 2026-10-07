@@ -24,7 +24,7 @@ from app.config import (ANTHROPIC_MODEL, AUTH_SESSION_HOURS, BOT_TOKEN,
                         LLM_DAILY_LIMIT, LLM_DAILY_TOKENS, TELEGRAM_POLLING,
                         TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, WEB_LLM_MODELS,
                         DEFAULT_RULES, ALERT_STATUSES, GROUP_ENABLED,
-                        INCIDENT_SWEEP_SEC, log)
+                        INCIDENT_SWEEP_SEC, GITLAB_URL, log)
 from app.summaries import banner, parse_duration
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -37,6 +37,7 @@ from app.repositories.usermap import UserMapRepo
 from app.repositories.chats import ChatsRepo
 from app.repositories.context import ContextRepo
 from app.repositories.incidents import IncidentRepo
+from app.repositories.gaps import GapsRepo, KINDS as GAP_KINDS
 from app.repositories.knowledge import KnowledgeRepo
 from app.repositories.llm_audit import LlmAuditRepo
 from app.repositories.projects import ProjectsRepo
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI):
     usermap = UserMapRepo(db.conn)
     context = ContextRepo(db.conn)
     incidents_repo = IncidentRepo(db.conn)
+    gaps = GapsRepo(db.conn)              # LLM-reported observability gaps
     llm_audit = LlmAuditRepo(db.conn)
     # seeds from SENTRY_PROJECTS/GITLAB_PROJECTS env, then the DB is the source
     # of truth for the id -> name/gitlab maps (edited in the web UI)
@@ -95,7 +97,7 @@ async def lifespan(app: FastAPI):
 
     # --- domain ---
     analysis = AnalysisService(issues, context, gitlab, llm, sentry_api, llm_audit,
-                               knowledge=knowledge)
+                               knowledge=knowledge, gaps=gaps)
     decider = Decider(chat_state, issues)
 
     # --- telegram + pipeline (bot.send is the pipeline's sender) ---
@@ -138,6 +140,7 @@ async def lifespan(app: FastAPI):
 
     app.state.incidents = incident_service
     app.state.incidents_repo = incidents_repo
+    app.state.gaps = gaps
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
 
@@ -654,7 +657,7 @@ async def explain_endpoint(request: Request):
             environment=body.get("environment"),
             auth_token=auth_token, model=model, audience=audience,
             system_context=system_context,
-            knowledge=request.app.state.knowledge)
+            knowledge=request.app.state.knowledge, gaps=request.app.state.gaps)
     except ValidationError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     uname = request.state.user["username"]
@@ -790,7 +793,7 @@ async def explain_stream(request: Request):
             environment=body.get("environment"),
             on_event=on_event, auth_token=auth_token, model=model,
             audience=audience, system_context=system_context,
-            knowledge=request.app.state.knowledge))
+            knowledge=request.app.state.knowledge, gaps=request.app.state.gaps))
 
 
 @app.post("/api/ask/stream")
@@ -828,7 +831,7 @@ async def ask_stream(request: Request):
         lambda on_event: ask(
             sentry_api, gitlab, llm, question=question, on_event=on_event,
             auth_token=auth_token, model=model, system_context=system_context,
-            knowledge=request.app.state.knowledge))
+            knowledge=request.app.state.knowledge, gaps=request.app.state.gaps))
 
 
 @app.get("/api/chats")
@@ -890,7 +893,7 @@ async def chats_message(request: Request):
         lambda on_event: ask(
             sentry_api, gitlab, llm, question=question, on_event=on_event,
             auth_token=auth_token, model=model, system_context=system_context,
-            knowledge=request.app.state.knowledge, resume=resume),
+            knowledge=request.app.state.knowledge, gaps=request.app.state.gaps, resume=resume),
         on_done=on_done)
 
 
@@ -959,6 +962,42 @@ def _parse_rule(kind, raw):
     if len(secs) != 3 or any(v is None or v <= 0 for v in secs):
         return None, "нужно ровно 3 окна (напр. 12h/6h/10m)"
     return ",".join(str(v) for v in secs), None
+
+
+# --- LLM observability gaps («Что нужно LLM») --------------------------------
+def _gap_source(projects, project_key):
+    """Best-effort GitLab source link for a gap's project (matched by id / slug /
+    name), as (repo, url) — so the panel can point the user at the code."""
+    if not project_key:
+        return None, None
+    key = str(project_key).strip().lower()
+    for p in projects.all():
+        fields = [str(p.get(f) or "").lower() for f in ("id", "slug", "name")]
+        if key in fields and p.get("gitlab_repo"):
+            repo = p["gitlab_repo"]
+            url = f"{GITLAB_URL}/{repo}" if GITLAB_URL else None
+            return repo, url
+    return None, None
+
+
+@app.get("/api/llm-gaps")
+async def llm_gaps_list(request: Request):
+    """What the LLM flagged as missing while investigating (no logs in Sentry,
+    too few logs, no source access, …), newest first, with a source link when
+    the project's GitLab repo is known."""
+    gaps = request.app.state.gaps
+    projects = request.app.state.projects
+    out = []
+    for g in gaps.list():
+        repo, url = _gap_source(projects, g.get("project"))
+        out.append({**g, "repo": repo, "source_url": url})
+    return {"gaps": out, "kinds": GAP_KINDS}
+
+
+@app.delete("/api/llm-gaps/{gap_id}")
+async def llm_gap_delete(request: Request, gap_id: int):
+    """Dismiss a gap once it has been addressed."""
+    return {"removed": request.app.state.gaps.delete(gap_id)}
 
 
 # --- incidents (read-only view for any logged-in user) -----------------------

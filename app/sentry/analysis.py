@@ -14,6 +14,7 @@ from app.config import ENABLE_LLM_TOOLS, GITLAB_REF, log
 from app.services.gitlab_tools import build_gitlab_server
 from app.services.sentry_tools import build_sentry_server, fmt_event_details
 from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
+from app.services.observability_tools import build_observability_server, GAPS_PROMPT
 from app.services.llm import money
 from app.utils import esc
 
@@ -37,7 +38,7 @@ def _parse_verdict(text):
 
 class AnalysisService:
     def __init__(self, issues, context, gitlab, llm, sentry, audit=None,
-                 knowledge=None):
+                 knowledge=None, gaps=None):
         self._issues = issues      # IssuesRepo (resolve_ref)
         self._context = context    # ContextRepo (ctx + analysis cache)
         self._gitlab = gitlab      # GitLabClient
@@ -45,6 +46,7 @@ class AnalysisService:
         self._sentry = sentry      # SentryApiClient (related_errors tool)
         self._audit = audit        # LlmAuditRepo (per-call audit trail)
         self._knowledge = knowledge  # KnowledgeService (notes memory tools)
+        self._gaps = gaps          # GapsRepo (report_gap tool: «что нужно LLM»)
 
     async def analyze(self, p: dict, use_tools: bool = False, chat_id=None,
                       kind: str = "alert"):
@@ -149,6 +151,12 @@ class AnalysisService:
                 servers.update(ks)
                 allowed += ka
                 prompt += NOTES_PROMPT
+            if servers and self._gaps is not None:
+                os_, oa = build_observability_server(
+                    self._gaps, project_hint=p.get("project"), issue_id=issue_id)
+                servers.update(os_)
+                allowed += oa
+                prompt += GAPS_PROMPT
             if servers:
                 prompt += (
                     "\n\nUse the tools if the context above is not enough to be "
@@ -228,6 +236,11 @@ class AnalysisService:
                 allowed += sa
         if not servers:
             return fallback
+        if self._gaps is not None:
+            os_, oa = build_observability_server(
+                self._gaps, project_hint=p.get("project"), issue_id=p.get("issue_id"))
+            servers.update(os_)
+            allowed += oa
 
         chain = "\n".join(f"{t}: {v}" for t, v in (p.get("exc_chain") or [])) \
             or f"{p.get('type')}: {p.get('value')}"
@@ -254,6 +267,8 @@ class AnalysisService:
             '"needs_solution_text": true|false}\n'
             "Set needs_solution_text=false ONLY when class=code AND verified=true."
         )
+        if self._gaps is not None:
+            prompt += GAPS_PROMPT
         rec = await self._llm.complete(prompt, mcp_servers=servers or None,
                                        allowed_tools=allowed or None)
         if self._audit is not None and rec is not None:

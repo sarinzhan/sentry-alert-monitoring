@@ -181,7 +181,7 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
                   device_id=None, msisdn=None, period=None, date_from=None,
                   date_to=None, environment=None, on_event=None,
                   auth_token=None, model=None, audience=None,
-                  system_context=None, knowledge=None):
+                  system_context=None, knowledge=None, gaps=None):
     """Agentic LLM investigation of a complaint. Returns the LlmCall record,
     or None on LLM failure. Raises ValidationError on bad input. on_event
     streams the model's live progress; auth_token runs the call on the user's
@@ -225,6 +225,12 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
         servers.update(s3)
         allowed = list(allowed) + a3
         notes = NOTES_PROMPT
+    if gaps is not None:
+        from app.services.observability_tools import build_observability_server, GAPS_PROMPT
+        sg, ag = build_observability_server(gaps)
+        servers.update(sg)
+        allowed = list(allowed) + ag
+        notes += GAPS_PROMPT
 
     window_h = (f"last {window['stats_period']}" if "stats_period" in window
                 else f"{window['start']} .. {window['end']} UTC")
@@ -247,7 +253,7 @@ async def explain(sentry, gitlab, llm, *, description, request_id=None,
 
 
 async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
-              model=None, system_context=None, knowledge=None, resume=None):
+              model=None, system_context=None, knowledge=None, resume=None, gaps=None):
     """Free-form question to the LLM (the web «Вопрос» tab, manager/admin
     only). Unlike explain(), NO investigation template, no role preset and no
     answer-style section are added — the prompt is just the admin system
@@ -282,6 +288,12 @@ async def ask(sentry, gitlab, llm, *, question, on_event=None, auth_token=None,
             servers.update(s3)
             allowed = list(allowed) + a3
             notes = NOTES_PROMPT
+        if gaps is not None:
+            from app.services.observability_tools import build_observability_server, GAPS_PROMPT
+            sg, ag = build_observability_server(gaps)
+            servers.update(sg)
+            allowed = list(allowed) + ag
+            notes += GAPS_PROMPT
 
     system_context = (system_context or "").strip()
     if resume:

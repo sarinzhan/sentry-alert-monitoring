@@ -330,6 +330,19 @@ class Database:
             " updated REAL NOT NULL)"
         )
 
+        # LLM-reported observability gaps («Что нужно LLM»): the model calls
+        # report_gap during an investigation when it hits a wall — no logs in
+        # Sentry, too few logs, no source access, etc. One row per (project,
+        # kind), bumped on each re-report so the panel stays tidy.
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS llm_gap ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT, kind TEXT NOT NULL,"
+            " detail TEXT, issue_id TEXT, source TEXT, count INTEGER NOT NULL DEFAULT 1,"
+            " first_seen REAL NOT NULL, last_seen REAL NOT NULL,"
+            " UNIQUE(project, kind))"
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_llm_gap_seen ON llm_gap(last_seen)")
+
         # --- incident grouping (org-scoped) ---
         # One incident = several Sentry issues sharing a root cause. Opened by the
         # Grouper at ingestion, notified once it crosses a chat's thresholds, and
