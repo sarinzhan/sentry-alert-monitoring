@@ -23,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from app.config import (ANTHROPIC_MODEL, AUTH_SESSION_HOURS, BOT_TOKEN,
                         LLM_DAILY_LIMIT, LLM_DAILY_TOKENS, TELEGRAM_POLLING,
                         TZ_OFFSET_HOURS, WEB_ENVIRONMENTS, WEB_LLM_MODELS,
-                        DEFAULT_RULES, ALERT_STATUSES, log)
+                        DEFAULT_RULES, ALERT_STATUSES, GROUP_ENABLED,
+                        INCIDENT_SWEEP_SEC, log)
 from app.summaries import banner, parse_duration
 from app.db import Database
 from app.repositories.issues import IssuesRepo
@@ -35,6 +36,7 @@ from app.repositories.keywords import KeywordsRepo
 from app.repositories.usermap import UserMapRepo
 from app.repositories.chats import ChatsRepo
 from app.repositories.context import ContextRepo
+from app.repositories.incidents import IncidentRepo
 from app.repositories.knowledge import KnowledgeRepo
 from app.repositories.llm_audit import LlmAuditRepo
 from app.repositories.projects import ProjectsRepo
@@ -50,6 +52,8 @@ from app.services.embeddings import Embedder
 from app.services.knowledge_tools import KnowledgeService
 from app.sentry.decision import Decider
 from app.sentry.analysis import AnalysisService
+from app.sentry.grouper import Grouper
+from app.sentry.incidents import IncidentService
 from app.sentry.pipeline import EventPipeline
 from app.telegram.bot import ChatBotHandler
 from app.telegram.deps import Deps
@@ -70,6 +74,7 @@ async def lifespan(app: FastAPI):
     keywords = KeywordsRepo(db.conn)
     usermap = UserMapRepo(db.conn)
     context = ContextRepo(db.conn)
+    incidents_repo = IncidentRepo(db.conn)
     llm_audit = LlmAuditRepo(db.conn)
     # seeds from SENTRY_PROJECTS/GITLAB_PROJECTS env, then the DB is the source
     # of truth for the id -> name/gitlab maps (edited in the web UI)
@@ -95,16 +100,23 @@ async def lifespan(app: FastAPI):
 
     # --- telegram + pipeline (bot.send is the pipeline's sender) ---
     bot = ChatBotHandler(BOT_TOKEN)
+    # incident grouping subsystem (org-scoped): group correlated issues into one
+    # incident and deliver a single "incident" message (the bot gives it send/edit/
+    # delete + the Resolved button). Opt-in per chat; see GROUP_ENABLED.
+    grouper = Grouper(incidents_repo, llm, audit=llm_audit)
+    incident_service = IncidentService(
+        incidents=incidents_repo, grouper=grouper, issues=issues, rules=rules,
+        subscriptions=subscriptions, analysis=analysis, context=context, bot=bot)
     pipeline = EventPipeline(
         issues=issues, subscriptions=subscriptions, rules=rules, keywords=keywords,
         usermap=usermap, context=context, decider=decider, sentry_api=sentry_api,
-        gitlab=gitlab, analysis=analysis, sender=bot.send)
+        gitlab=gitlab, analysis=analysis, sender=bot.send, incidents=incident_service)
 
     deps = Deps(issues=issues, subscriptions=subscriptions, rules=rules,
                 keywords=keywords, usermap=usermap, analysis=analysis,
                 pipeline=pipeline, llm=llm, llm_audit=llm_audit,
                 context=context, sentry=sentry_api, gitlab=gitlab,
-                knowledge=knowledge, chat_meta=chat_meta)
+                knowledge=knowledge, chat_meta=chat_meta, incidents=incident_service)
     register_all(bot.app, deps)
 
     app.state.bot = bot
@@ -124,11 +136,30 @@ async def lifespan(app: FastAPI):
     app.state.rules = rules
     app.state.chat_meta = chat_meta
 
+    app.state.incidents = incident_service
     await bot.start(polling=TELEGRAM_POLLING)
     await set_bot_commands(bot.bot)
+
+    # background sweeper: auto-resolve incidents idle for a full window (the TTL
+    # timeout) — the system is webhook-driven, so this is the one periodic task.
+    async def _incident_sweeper():
+        while True:
+            try:
+                await asyncio.sleep(INCIDENT_SWEEP_SEC)
+                n = await incident_service.sweep()
+                if n:
+                    log.info("incident sweeper auto-resolved %d", n)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.warning("incident sweeper error: %s", e)
+
+    sweeper = asyncio.create_task(_incident_sweeper()) if GROUP_ENABLED else None
     log.info("startup complete")
     yield
 
+    if sweeper is not None:
+        sweeper.cancel()
     await bot.stop()
     for svc in app.state.services:
         await svc.aclose()
@@ -896,6 +927,11 @@ _RULE_KINDS = {
     "critical_ratelimit_sec":  "duration",
     "project_window_sec":      "duration0",   # 0 = off
     "stat_windows":            "windows",
+    # incident subsystem per-chat notify thresholds (incident_enabled is a toggle,
+    # handled separately below like statuses)
+    "incident_window_sec":       "duration",
+    "incident_error_threshold":  "int",
+    "incident_user_threshold":   "int",
 }
 
 
@@ -945,7 +981,10 @@ async def telegram_chats(request: Request):
             "username": meta.get("username"),
             "type": meta.get("type"),
             "subscriptions": by_chat.get(cid, []),
-            "statuses": sorted(eff["statuses"]) if eff.get("statuses") else None,
+            # None = all error statuses; [] = muted (incident-only chat)
+            "statuses": (None if eff.get("statuses") is None
+                         else sorted(eff["statuses"])),
+            "incident_enabled": bool(eff.get("incident_enabled")),
             "rules": {k: eff[k] for k in _RULE_KINDS},
             "overrides": rules.overrides(cid),
         })
@@ -1013,14 +1052,18 @@ async def telegram_rules(request: Request):
         rules.set_rule(chat_id, col, val)
     if "statuses" in body:
         st = body.get("statuses")
-        if not st:
-            rules.set_statuses(chat_id, None)         # all
+        if st is None:
+            rules.set_statuses(chat_id, None)         # all error statuses
+        elif st == []:
+            rules.set_statuses(chat_id, set())        # none -> mute errors (incident-only)
         else:
             picked = {s for s in st if s in ALERT_STATUSES}
             if not picked:
                 return JSONResponse({"error": "статусы: допустимо "
                                     + ", ".join(ALERT_STATUSES)}, status_code=422)
             rules.set_statuses(chat_id, picked)
+    if "incident_enabled" in body:                    # separate incident subsystem toggle
+        rules.set_rule(chat_id, "incident_enabled", 1 if body.get("incident_enabled") else 0)
     return {"ok": True}
 
 

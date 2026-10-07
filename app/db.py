@@ -303,10 +303,18 @@ class Database:
             " last_sent REAL NOT NULL DEFAULT 0, last_critical REAL NOT NULL DEFAULT 0,"
             " step INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chat_id, issue_id))"
         )
-        try:
-            db.execute("ALTER TABLE chat_rules ADD COLUMN project_window_sec INTEGER")
-        except sqlite3.OperationalError:
-            pass
+        for stmt in (
+            "ALTER TABLE chat_rules ADD COLUMN project_window_sec INTEGER",
+            # incident subsystem opt-in + per-chat notify thresholds (NULL = default)
+            "ALTER TABLE chat_rules ADD COLUMN incident_enabled INTEGER",
+            "ALTER TABLE chat_rules ADD COLUMN incident_window_sec INTEGER",
+            "ALTER TABLE chat_rules ADD COLUMN incident_error_threshold INTEGER",
+            "ALTER TABLE chat_rules ADD COLUMN incident_user_threshold INTEGER",
+        ):
+            try:
+                db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         # per (chat, project) last send — drives the "one message per project" window
         db.execute(
             "CREATE TABLE IF NOT EXISTS chat_project_state ("
@@ -320,5 +328,46 @@ class Database:
             "CREATE TABLE IF NOT EXISTS chat_meta ("
             " chat_id TEXT PRIMARY KEY, title TEXT, username TEXT, type TEXT,"
             " updated REAL NOT NULL)"
+        )
+
+        # --- incident grouping (org-scoped) ---
+        # One incident = several Sentry issues sharing a root cause. Opened by the
+        # Grouper at ingestion, notified once it crosses a chat's thresholds, and
+        # closed (status='resolved') by the Resolved button or the idle sweeper.
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS incident (
+                incident_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                status         TEXT NOT NULL DEFAULT 'open',   -- open | resolved
+                title          TEXT,
+                description    TEXT,                           -- LLM root-cause (reuses analysis)
+                lead_issue_id  TEXT,
+                projects       TEXT,                           -- comma-set of affected project names
+                member_count   INTEGER NOT NULL DEFAULT 0,
+                opened_at      REAL NOT NULL,
+                last_member_at REAL NOT NULL,
+                last_escalated_at REAL NOT NULL DEFAULT 0,
+                resolved_at    REAL,
+                resolved_by    TEXT,
+                resolution     TEXT,                           -- solution text / auto reason
+                resolved_kind  TEXT                            -- manual | auto | unverified
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS ix_incident_status ON incident(status, last_member_at)")
+        # one row per issue grouped into an incident (an issue belongs to one incident)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS incident_member ("
+            " incident_id INTEGER NOT NULL, issue_id TEXT NOT NULL,"
+            " signature TEXT, project TEXT, title TEXT, short TEXT, joined_at REAL NOT NULL,"
+            " PRIMARY KEY (incident_id, issue_id))"
+        )
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_incident_member_issue ON incident_member(issue_id)")
+        # the live incident message per chat — edited in place as it grows, deleted on resolve
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS incident_message ("
+            " incident_id INTEGER NOT NULL, chat_id TEXT NOT NULL, message_id INTEGER,"
+            " thread_id TEXT, member_count_at_send INTEGER NOT NULL DEFAULT 0, sent_at REAL NOT NULL,"
+            " PRIMARY KEY (incident_id, chat_id))"
         )
         db.commit()

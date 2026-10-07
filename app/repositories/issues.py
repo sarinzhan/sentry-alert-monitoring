@@ -6,11 +6,11 @@ last_sent used by /status.
 """
 import time
 
-from app.config import STAT_WINDOWS, CRITICAL_WINDOW_SEC
+from app.config import STAT_WINDOWS, CRITICAL_WINDOW_SEC, INCIDENT_WINDOW_SEC
 from app.utils import short_id
 
-# prune events older than the widest window we ever query
-PRUNE_HORIZON = max(max(STAT_WINDOWS), CRITICAL_WINDOW_SEC)
+# prune events older than the widest window we ever query (incident aggregates too)
+PRUNE_HORIZON = max(max(STAT_WINDOWS), CRITICAL_WINDOW_SEC, INCIDENT_WINDOW_SEC)
 
 
 class IssuesRepo:
@@ -43,6 +43,23 @@ class IssuesRepo:
             "SELECT COUNT(DISTINCT usr) FROM event_log WHERE issue_id=? AND ts>=? AND usr IS NOT NULL",
             (issue_id, since),
         ).fetchone()[0]
+        return cnt, usrs
+
+    def agg_stats(self, issue_ids, window_sec, now=None):
+        """(total events, distinct affected users) across a SET of issues over the
+        window — the aggregate that gates incident notifications."""
+        ids = [i for i in (issue_ids or []) if i]
+        if not ids:
+            return 0, 0
+        now = now or time.time()
+        since = now - window_sec
+        marks = ",".join("?" * len(ids))
+        cnt = self.db.execute(
+            f"SELECT COUNT(*) FROM event_log WHERE issue_id IN ({marks}) AND ts>=?",
+            (*ids, since)).fetchone()[0]
+        usrs = self.db.execute(
+            f"SELECT COUNT(DISTINCT usr) FROM event_log WHERE issue_id IN ({marks})"
+            " AND ts>=? AND usr IS NOT NULL", (*ids, since)).fetchone()[0]
         return cnt, usrs
 
     # ---------------------------------------------------------- issue metadata

@@ -15,6 +15,9 @@ const RULE_FIELDS = [
   ['critical_ratelimit_sec', 'Антиспам критичных', 'dur'],
   ['project_window_sec', 'Окно на проект (0 — выкл)', 'dur'],
   ['stat_windows', 'Окна статистики', 'win'],
+  ['incident_window_sec', 'Инцидент: окно / таймаут', 'dur'],
+  ['incident_error_threshold', 'Инцидент: порог событий', 'int'],
+  ['incident_user_threshold', 'Инцидент: порог абонентов', 'int'],
 ]
 
 function fmtDur(sec) {
@@ -47,11 +50,15 @@ function ChatCard({ chat, projects, allStatuses, defaults, onChanged }) {
 
   const [edits, setEdits] = useState(initRules)
   const [statuses, setStatuses] = useState(initStatuses)
+  const [incidentEnabled, setIncidentEnabled] = useState(!!chat.incident_enabled)
   const [newProject, setNewProject] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
 
-  useEffect(() => { setEdits(initRules()); setStatuses(initStatuses()) }, [chat])
+  useEffect(() => {
+    setEdits(initRules()); setStatuses(initStatuses())
+    setIncidentEnabled(!!chat.incident_enabled)
+  }, [chat])
 
   const overridden = new Set(chat.overrides || [])
 
@@ -86,7 +93,10 @@ function ChatCard({ chat, projects, allStatuses, defaults, onChanged }) {
     const body = {}
     if (Object.keys(rules).length) body.rules = rules
     if (statusesChanged) body.statuses = nextStatuses
-    if (!body.rules && !('statuses' in body)) { setStatus('нет изменений'); return }
+    if (incidentEnabled !== !!chat.incident_enabled) body.incident_enabled = incidentEnabled
+    if (!body.rules && !('statuses' in body) && !('incident_enabled' in body)) {
+      setStatus('нет изменений'); return
+    }
     await run(async () => {
       await tgSaveRules(chat.chat_id, body)
       setStatus('✓ сохранено')
@@ -134,7 +144,7 @@ function ChatCard({ chat, projects, allStatuses, defaults, onChanged }) {
 
       {/* alert statuses */}
       <div className="field wide">
-        <label><b>Статусы алертов</b> (ничего не отмечено = все)</label>
+        <label><b>Статусы алертов</b> (все отмечено = все; ничего = только инциденты)</label>
         <div className="chips">
           {allStatuses.map((s) => (
             <label key={s} className="chk">
@@ -143,6 +153,21 @@ function ChatCard({ chat, projects, allStatuses, defaults, onChanged }) {
             </label>
           ))}
         </div>
+      </div>
+
+      {/* incident subsystem (separate from the error statuses above) */}
+      <div className="field wide">
+        <label><b>Инциденты</b> — одно сообщение на группу связанных ошибок</label>
+        <div className="chips">
+          <label className="chk">
+            <input type="checkbox" checked={incidentEnabled}
+                   onChange={() => setIncidentEnabled((v) => !v)} /> получать инциденты
+          </label>
+        </div>
+        <span className="hint">
+          Схожие ошибки группируются в один инцидент; чат получает одно сообщение
+          с описанием и кнопкой «Разрешить». Пороги — в правилах ниже.
+        </span>
       </div>
 
       {/* trigger rules */}

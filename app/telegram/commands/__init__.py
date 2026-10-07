@@ -7,13 +7,14 @@ _helpers.reply.
 """
 from telegram import BotCommand, Update
 from telegram.error import TelegramError
-from telegram.ext import CommandHandler, TypeHandler, filters
+from telegram.ext import (CommandHandler, TypeHandler, MessageHandler,
+                          CallbackQueryHandler, filters)
 
 from app.config import log
 from app.telegram.commands import (
     start, help as help_cmd, params, subscribe, alerts, rules_set,
     status, ai, ask, projects, watch, usermap, llm_log, request, api_doc,
-    why, activity, notes,
+    why, activity, notes, incident,
 )
 
 # CommandHandler's default filter only covers regular/edited messages; the bot
@@ -126,4 +127,10 @@ def register_all(app, deps):
     app.add_handler(TypeHandler(Update, _capture_chat), group=-1)
     for names, handler in _COMMANDS:
         app.add_handler(CommandHandler(names, _logged(handler), filters=_CMD_FILTERS))
+    # incident Resolved button + the solution-text reply it waits for (added after
+    # the commands so a "/command" message still reaches its CommandHandler first)
+    app.add_handler(CallbackQueryHandler(incident.on_resolve_callback,
+                                         pattern=r"^incident:resolve:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                   incident.on_solution_text))
     app.add_error_handler(_on_error)

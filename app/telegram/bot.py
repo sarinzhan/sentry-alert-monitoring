@@ -7,7 +7,7 @@ themselves live in app.telegram.commands and are wired in by the controller.
 import ssl
 import asyncio
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application
@@ -58,9 +58,11 @@ class ChatBotHandler:
         log.info("telegram bot ok: @%s", self.bot.username)
         if polling:
             await self._clear_webhook()
-            # drop_pending_updates so a backlog delivered to the old webhook isn't replayed
+            # drop_pending_updates so a backlog delivered to the old webhook isn't replayed.
+            # callback_query is needed for the incident Resolved button.
             await self.app.updater.start_polling(
-                allowed_updates=["message", "channel_post"], drop_pending_updates=True)
+                allowed_updates=["message", "channel_post", "callback_query"],
+                drop_pending_updates=True)
             log.info("telegram polling on")
 
     async def _clear_webhook(self):
@@ -116,3 +118,32 @@ class ChatBotHandler:
         except TelegramError as e:
             log.error("telegram send failed: %s", e)
             return None
+
+    async def edit(self, text: str, chat_id, message_id, message_thread_id=None,
+                   reply_markup=None):
+        """Edit a previously-sent message in place (incident live message). Returns
+        True on success, False otherwise (e.g. 'message is not modified')."""
+        try:
+            await self.bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                reply_markup=reply_markup)
+            return True
+        except TelegramError as e:
+            log.debug("telegram edit failed: %s", e)
+            return False
+
+    async def delete(self, chat_id, message_id):
+        """Delete a message (the live incident message on resolve). Best-effort."""
+        try:
+            await self.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            return True
+        except TelegramError as e:
+            log.debug("telegram delete failed: %s", e)
+            return False
+
+    @staticmethod
+    def resolve_markup(incident_id):
+        """The ✅ Resolved inline button carried by every incident message."""
+        return InlineKeyboardMarkup([[InlineKeyboardButton(
+            "✅ Разрешить", callback_data=f"incident:resolve:{incident_id}")]])

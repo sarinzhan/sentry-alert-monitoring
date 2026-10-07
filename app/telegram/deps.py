@@ -22,3 +22,4 @@ class Deps:
     gitlab: object          # GitLabClient (/api docs generation)
     knowledge: object = None  # KnowledgeService (notes memory: tools + /notes)
     chat_meta: object = None  # ChatMetaRepo (records chat titles for the web panel)
+    incidents: object = None  # IncidentService (Resolved button + solution capture)

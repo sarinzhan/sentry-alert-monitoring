@@ -158,6 +158,32 @@ STAT_WINDOWS = [int(x) * 60 for x in os.environ.get("STAT_WINDOWS", "720,360,10"
 if len(STAT_WINDOWS) != 3:
     STAT_WINDOWS = [720 * 60, 360 * 60, 10 * 60]
 
+# --- incident grouping (org-scoped, a subsystem separate from the error statuses) ---
+# Group several Sentry issues that share one root cause (e.g. a downstream service
+# is down and surfaces as 5-7 different issues) into ONE incident, and deliver a
+# single "incident" message instead of an alert per issue. Opt-in per chat
+# (incident_enabled), scoped to the chat's subscribed projects. Grouping runs once
+# per issue at ingestion; the deterministic signature handles the obvious cases and
+# the LLM only breaks ties, so steady-state cost is ~zero.
+GROUP_ENABLED = os.environ.get("GROUP_ENABLED", "false").lower() == "true"
+# Incident activity window: how long an open incident keeps absorbing new issues,
+# and the auto-resolve timeout — an open incident with no new error for a full
+# window is auto-resolved. Org-scoped (a property of the incident itself).
+INCIDENT_WINDOW_MINUTE = float(os.environ.get("INCIDENT_WINDOW_MINUTE", "60"))
+INCIDENT_WINDOW_SEC    = int(INCIDENT_WINDOW_MINUTE * 60)
+# An incident notifies a chat only once its aggregate (summed across all grouped
+# issues over the window) crosses the chat's thresholds: total events (strict >)
+# OR distinct affected users (>=). Keeps a trivial pair from paging anyone.
+INCIDENT_ERROR_THRESHOLD = int(os.environ.get("INCIDENT_ERROR_THRESHOLD", "20"))
+INCIDENT_USER_THRESHOLD  = int(os.environ.get("INCIDENT_USER_THRESHOLD", "10"))
+# Safety cap on how many issues one incident will absorb.
+INCIDENT_MAX_MEMBERS = int(os.environ.get("INCIDENT_MAX_MEMBERS", "50"))
+# Background sweeper cadence (auto-resolves incidents idle for a full window).
+INCIDENT_SWEEP_SEC = int(os.environ.get("INCIDENT_SWEEP_SEC", "60"))
+# Optional cheaper model for the grouping merge-vs-new classification. Empty ->
+# the default ANTHROPIC_MODEL.
+INCIDENT_GROUPING_MODEL = os.environ.get("INCIDENT_GROUPING_MODEL", "").strip() or None
+
 # --- LLM (Claude Agent SDK) ---
 ENABLE_LLM         = os.environ.get("ENABLE_LLM", "false").lower() == "true"
 ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
@@ -224,10 +250,18 @@ DEFAULT_RULES = {
     "critical_ratelimit_sec":  CRITICAL_RATELIMIT_SEC,
     "project_window_sec":      PROJECT_WINDOW_SEC,
     "stat_windows":            list(STAT_WINDOWS),
-    "statuses":                None,     # None = all (new/ongoing/escalating)
+    "statuses":                None,     # None = all; empty set = mute error alerts
+    # incident subsystem (separate from the error statuses above). Opt-in; the
+    # thresholds below gate when an incident notifies THIS chat.
+    "incident_enabled":          False,
+    "incident_window_sec":       INCIDENT_WINDOW_SEC,
+    "incident_error_threshold":  INCIDENT_ERROR_THRESHOLD,
+    "incident_user_threshold":   INCIDENT_USER_THRESHOLD,
 }
 
-# The three alert statuses a chat can opt in/out of.
+# The error statuses a chat can opt in/out of. `incident` is NOT here — it is a
+# separate subsystem with its own per-chat toggle (incident_enabled) and lifecycle.
+# statuses = None -> all of these; empty set -> none (chat gets only incidents).
 ALERT_STATUSES = ("new", "ongoing", "escalating")
 
 

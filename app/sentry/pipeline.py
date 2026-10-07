@@ -9,7 +9,7 @@ import time
 import hashlib
 import asyncio
 
-from app.config import LOG_RAW_PAYLOAD, LOG_LLM_PROMPT, log
+from app.config import LOG_RAW_PAYLOAD, LOG_LLM_PROMPT, GROUP_ENABLED, log
 
 # Sentry delivers webhooks at-least-once; a redelivery of the SAME event within
 # this window is dropped (idempotency), so one error can't alert twice.
@@ -30,7 +30,7 @@ def _as_chat_id(chat_id):
 
 class EventPipeline:
     def __init__(self, *, issues, subscriptions, rules, keywords, usermap, context,
-                 decider, sentry_api, gitlab, analysis, sender):
+                 decider, sentry_api, gitlab, analysis, sender, incidents=None):
         self.issues = issues
         self.subscriptions = subscriptions
         self.rules = rules
@@ -41,6 +41,7 @@ class EventPipeline:
         self.sentry_api = sentry_api
         self.gitlab = gitlab
         self.analysis = analysis
+        self.incidents = incidents      # IncidentService (grouping subsystem), may be None
         self._send = sender
         self._lock = asyncio.Lock()
         self._recent = {}          # delivery key -> ts, for at-least-once dedup
@@ -116,9 +117,29 @@ class EventPipeline:
             # save context so /ai can re-run the LLM on demand for this issue
             self.context.store_ctx(p)
 
+            # LLM cause/fix is computed at most once per event, lazily, and SHARED
+            # by the incident description and every classic alert (cached per
+            # issue+commit inside analyze(), so repeats are cheap).
+            analysis_state = {"done": False, "text": None}
+
+            async def get_analysis():
+                if not analysis_state["done"]:
+                    analysis_state["text"] = await self.analysis.analyze(p, use_tools=True)
+                    analysis_state["done"] = True
+                return analysis_state["text"]
+
+            # incident grouping subsystem (org-scoped, opt-in per chat): group this
+            # issue and, for incident-enabled subscribers, notify/edit the single
+            # incident message. Independent of the per-issue error path below.
+            if GROUP_ENABLED and self.incidents is not None:
+                try:
+                    await self.incidents.handle(p, targets, get_analysis, now)
+                except Exception as e:
+                    log.warning("incident handling failed issue=%s: %s", p["issue_id"], e)
+
             # stable key for the per-project window (id preferred over slug/name)
             project_key = p.get("project_id") or raw_project or p.get("project")
-            analysis, analysis_done = None, False        # LLM analysis computed at most once
+            analysis = None
             sent = 0
             for chat_id, thread_id in targets:
                 rules = self.rules.effective(chat_id)
@@ -127,13 +148,8 @@ class EventPipeline:
                         chat_id, p["issue_id"], rules, now, forced, project=project_key)
                 if not send:
                     continue
-                # LLM cause/fix on EVERY alert (any status, any environment),
-                # agentic: the model may search logs / chase related_errors / read
-                # code before answering. Computed once per event here and cached
-                # per issue+commit inside analyze(), so repeats are cheap.
-                if not analysis_done:
-                    analysis = await self.analysis.analyze(p, use_tools=True)
-                    analysis_done = True
+                # agentic cause/fix on EVERY alert (shared getter above, cached)
+                analysis = await get_analysis()
                 # per-chat view: counts over this chat's stat windows + matching labels
                 pc = dict(p)
                 pc["status"] = status
