@@ -34,6 +34,32 @@ class LlmAuditRepo:
         self.db.commit()
         return llm_id
 
+    def list(self, kinds=None, limit=100, offset=0):
+        """Recent calls (newest first), optionally filtered to a set of kinds.
+        Summary rows for a history list — no full prompt/trace, but a response
+        preview and the tool-call count; fetch get(id) for the full step trace."""
+        cols = ("id", "at", "kind", "issue_id", "chat_id", "model", "agentic",
+                "turns", "in_tokens", "out_tokens", "cost_usd", "duration_ms",
+                "response", "tool_calls")
+        q = f"SELECT {', '.join(cols)} FROM llm_call"
+        args = []
+        kinds = list(kinds or [])
+        if kinds:
+            q += " WHERE kind IN (%s)" % ",".join("?" * len(kinds))
+            args += kinds
+        q += " ORDER BY at DESC LIMIT ? OFFSET ?"
+        args += [int(limit), int(offset)]
+        out = []
+        for row in self.db.execute(q, args).fetchall():
+            d = dict(zip(cols, row))
+            d["agentic"] = bool(d["agentic"])
+            calls = json.loads(d.pop("tool_calls") or "[]")
+            d["tool_count"] = len(calls)
+            resp = (d.pop("response") or "")
+            d["preview"] = resp[:200] + ("…" if len(resp) > 200 else "")
+            out.append(d)
+        return out
+
     def get(self, ref):
         """Full record dict by id — accepts 'llm_a1b2c3' or 'a1b2c3', any case."""
         ref = (ref or "").strip().lower()

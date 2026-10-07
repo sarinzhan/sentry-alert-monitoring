@@ -120,6 +120,12 @@ export const dismissLlmGap = (id) => req('DELETE', `llm-gaps/${id}`)
 export const getNotes = () => get('notes').then((d) => d.notes)
 export const deleteNote = (id) => req('DELETE', `notes/${id}`)
 
+// --- LLM call history for the Sentry webhook pipeline (alert/group/resolve) ---
+// list: {calls:[...summary], kinds:[...]}; detail: full record incl. tool trace
+export const getLlmHistory = (kinds) =>
+  get(`llm-history${kinds != null ? `?kinds=${encodeURIComponent(kinds)}` : ''}`)
+export const getLlmCall = (id) => get(`llm/${id}`)
+
 export const getHistory = () => get('history').then((d) => d.requests)
 // per-day LLM usage split shared/personal token; username — admin only
 export const getUsage = (period, username) =>

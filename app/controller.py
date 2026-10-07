@@ -1418,6 +1418,33 @@ async def projects_update(pid: str, request: Request):
     return row
 
 
+# LLM calls triggered by the Sentry webhook pipeline / incidents (as opposed to
+# the web investigation flows) — the default filter for the «LLM по вебхукам» tab.
+WEBHOOK_LLM_KINDS = ("alert", "group", "resolve")
+
+
+@app.get("/api/llm-history")
+async def llm_history(request: Request):
+    """Recent LLM calls from the Sentry webhook pipeline (alert analysis, incident
+    grouping, resolution checks), newest first. ?kinds=a,b overrides the filter
+    (empty = all kinds); ?limit=&offset= paginate. Each row has a response
+    preview + tool-call count; open one via GET /api/llm/{id} for the full
+    step trace (tool name, arguments, result)."""
+    audit = request.app.state.llm_audit
+    raw = request.query_params.get("kinds")
+    if raw is None:
+        kinds = list(WEBHOOK_LLM_KINDS)
+    else:
+        kinds = [k.strip() for k in raw.split(",") if k.strip()]   # empty -> all
+    try:
+        limit = min(int(request.query_params.get("limit") or 100), 500)
+        offset = max(int(request.query_params.get("offset") or 0), 0)
+    except ValueError:
+        limit, offset = 100, 0
+    return {"calls": audit.list(kinds=kinds, limit=limit, offset=offset),
+            "kinds": list(WEBHOOK_LLM_KINDS)}
+
+
 @app.get("/api/llm/{llm_id}")
 async def llm_call(llm_id: str, request: Request):
     """Full record of one LLM call (prompt, tool trace, tokens, response) by the
