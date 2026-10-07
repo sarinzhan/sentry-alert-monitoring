@@ -12,6 +12,10 @@ RULE_KEYS = {
     "critical_ratelimit": ("critical_ratelimit_sec", "duration"),
     "project_window":     ("project_window_sec", "duration0"),   # 0 = off
     "stat_windows":       ("stat_windows", "windows"),
+    # incident subsystem thresholds (on/off toggle is /incidents)
+    "incident_window":    ("incident_window_sec", "duration"),
+    "incident_errors":    ("incident_error_threshold", "int"),
+    "incident_users":     ("incident_user_threshold", "int"),
 }
 
 

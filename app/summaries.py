@@ -77,6 +77,12 @@ def banner():
 def rules_summary(r):
     """Format one chat's effective trigger rules (a dict shaped like DEFAULT_RULES)."""
     statuses = r.get("statuses")
+    if statuses is None:
+        statuses_str = "all"
+    elif not statuses:
+        statuses_str = "none (incidents only)"
+    else:
+        statuses_str = "/".join(s for s in c.ALERT_STATUSES if s in statuses)
     return "\n".join([
         "ongoing (min gap):        %s" % fmt_duration(r["ongoing_sec"]),
         "critical window:          %s" % fmt_duration(r["critical_window_sec"]),
@@ -86,8 +92,11 @@ def rules_summary(r):
         "project window:           %s" % ("1 msg / project / %s" % fmt_duration(r["project_window_sec"])
                                           if r.get("project_window_sec") else "off"),
         "stat windows (line 2):    %s" % "/".join(fmt_duration(w) for w in r["stat_windows"]),
-        "statuses:                 %s" % ("all" if not statuses else "/".join(
-            s for s in c.ALERT_STATUSES if s in statuses)),
+        "statuses:                 %s" % statuses_str,
+        "incidents:                %s" % ("on" if r.get("incident_enabled") else "off"),
+        "incident window/timeout:  %s" % fmt_duration(r.get("incident_window_sec") or 0),
+        "incident error threshold: >%d" % (r.get("incident_error_threshold") or 0),
+        "incident user threshold:  >=%d" % (r.get("incident_user_threshold") or 0),
     ])
 
 

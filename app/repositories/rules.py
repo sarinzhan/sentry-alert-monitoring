@@ -84,10 +84,13 @@ class RulesRepo:
         return True
 
     def reset(self, chat_id):
-        """Drop all per-chat rule overrides (back to global defaults). Keeps statuses/subs."""
+        """Drop per-chat threshold/window overrides (back to global defaults).
+        Keeps the opt-ins: statuses, subscriptions, and the incident_enabled toggle."""
         self.db.execute(
             "UPDATE chat_rules SET ongoing_sec=NULL, critical_window_sec=NULL,"
             " critical_threshold=NULL, affected_user_threshold=NULL,"
             " critical_ratelimit_sec=NULL, project_window_sec=NULL,"
-            " stat_windows=NULL WHERE chat_id=?", (str(chat_id),))
+            " stat_windows=NULL, incident_window_sec=NULL,"
+            " incident_error_threshold=NULL, incident_user_threshold=NULL"
+            " WHERE chat_id=?", (str(chat_id),))
         self.db.commit()

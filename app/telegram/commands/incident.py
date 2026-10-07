@@ -53,8 +53,10 @@ async def on_incidents(update, ctx):
         f"порог абонентов: <b>{esc(r.get('incident_user_threshold'))}</b> · "
         f"окно/таймаут: <b>{esc(win)}</b>",
         "Переключить: <code>/incidents on</code> / <code>/incidents off</code>.",
-        "Инциденты приходят по подписанным проектам (<code>/subscribe</code>); "
-        "пороги меняются в веб-панели.",
+        "Пороги: <code>/set incident_errors 20</code> · "
+        "<code>/set incident_users 10</code> · "
+        "<code>/set incident_window 60m</code>.",
+        "Инциденты приходят по подписанным проектам (<code>/subscribe</code>).",
     ]
     if not GROUP_ENABLED:
         lines.append("⚠️ Группировка выключена глобально (GROUP_ENABLED=false).")
