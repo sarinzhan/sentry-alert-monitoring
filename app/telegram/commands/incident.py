@@ -1,4 +1,8 @@
-"""Incident Resolved button + solution-text capture.
+"""Incident subsystem: the /incidents opt-in command, the Resolved button, and
+the solution-text capture.
+
+on_incidents — /incidents on|off: toggle whether THIS chat receives incident
+messages (scoped to its subscribed projects). With no args, shows current state.
 
 on_resolve_callback — fires when someone taps «✅ Разрешить» on an incident
 message. It runs the agentic verification (fix merged to main? / logs clean?) and
@@ -8,9 +12,53 @@ to reply with the solution text.
 on_solution_text — a plain-text MessageHandler that catches that reply (keyed by
 chat+user in bot_data) and finalizes the resolution.
 """
-from app.config import log
+from app.config import GROUP_ENABLED, log
 from app.utils import esc
-from app.telegram.commands._helpers import reply, deps_of
+from app.summaries import fmt_duration
+from app.telegram.commands._helpers import reply, chat_of, deps_of
+
+_ON = {"on", "вкл", "включить", "включи", "да", "1", "true"}
+_OFF = {"off", "выкл", "выключить", "выключи", "нет", "0", "false"}
+
+
+async def on_incidents(update, ctx):
+    chat_id, _ = chat_of(update)
+    deps = deps_of(ctx)
+    rules_repo = deps.rules
+    args = [a.lower() for a in (ctx.args or [])]
+
+    if args:
+        tok = args[0]
+        if tok not in _ON and tok not in _OFF:
+            return await reply(update, "Использование: <code>/incidents on</code> или "
+                               "<code>/incidents off</code>.")
+        rules_repo.set_rule(chat_id, "incident_enabled", 1 if tok in _ON else 0)
+        state = "включены ✅" if tok in _ON else "выключены ⛔"
+        notes = []
+        if tok in _ON and not GROUP_ENABLED:
+            notes.append("⚠️ Группировка инцидентов выключена глобально "
+                         "(GROUP_ENABLED=false) — попросите администратора включить.")
+        if tok in _ON and not deps.subscriptions.list_for(chat_id):
+            notes.append("⚠️ Чат не подписан ни на один проект — инциденты приходят "
+                         "только по подписанным проектам (<code>/subscribe</code>).")
+        tail = ("\n" + "\n".join(notes)) if notes else ""
+        return await reply(update, f"Инциденты для этого чата <b>{state}</b>.{tail}")
+
+    r = rules_repo.effective(chat_id)
+    on = r.get("incident_enabled")
+    win = fmt_duration(r.get("incident_window_sec") or 0)
+    lines = [
+        f"Инциденты: <b>{'включены ✅' if on else 'выключены ⛔'}</b>",
+        f"Порог событий: <b>{esc(r.get('incident_error_threshold'))}</b> · "
+        f"порог абонентов: <b>{esc(r.get('incident_user_threshold'))}</b> · "
+        f"окно/таймаут: <b>{esc(win)}</b>",
+        "Переключить: <code>/incidents on</code> / <code>/incidents off</code>.",
+        "Инциденты приходят по подписанным проектам (<code>/subscribe</code>); "
+        "пороги меняются в веб-панели.",
+    ]
+    if not GROUP_ENABLED:
+        lines.append("⚠️ Группировка выключена глобально (GROUP_ENABLED=false).")
+    await reply(update, "\n".join(lines))
 
 
 def _pending(ctx):
