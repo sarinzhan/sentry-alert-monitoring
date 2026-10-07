@@ -63,33 +63,33 @@ class IncidentRepo:
 
     def get(self, incident_id):
         row = self.db.execute(
-            "SELECT incident_id, status, title, description, lead_issue_id, projects,"
-            " member_count, opened_at, last_member_at, last_escalated_at,"
+            "SELECT incident_id, status, title, llm_title, description, lead_issue_id,"
+            " projects, member_count, opened_at, last_member_at, last_escalated_at,"
             " resolved_at, resolved_by, resolution, resolved_kind"
             " FROM incident WHERE incident_id=?", (incident_id,)).fetchone()
         if not row:
             return None
-        keys = ("incident_id", "status", "title", "description", "lead_issue_id",
-                "projects", "member_count", "opened_at", "last_member_at",
-                "last_escalated_at", "resolved_at", "resolved_by", "resolution",
-                "resolved_kind")
+        keys = ("incident_id", "status", "title", "llm_title", "description",
+                "lead_issue_id", "projects", "member_count", "opened_at",
+                "last_member_at", "last_escalated_at", "resolved_at", "resolved_by",
+                "resolution", "resolved_kind")
         return dict(zip(keys, row))
 
     def list(self, limit=200, status=None):
         """Incidents for the web panel — open first, then most-recent activity.
         status filters to 'open' or 'resolved'; None returns both."""
-        q = ("SELECT incident_id, status, title, description, projects, member_count,"
-             " opened_at, last_member_at, resolved_at, resolved_by, resolved_kind,"
-             " resolution FROM incident")
+        q = ("SELECT incident_id, status, title, llm_title, description, projects,"
+             " member_count, opened_at, last_member_at, resolved_at, resolved_by,"
+             " resolved_kind, resolution FROM incident")
         args = []
         if status in ("open", "resolved"):
             q += " WHERE status=?"
             args.append(status)
         q += " ORDER BY (status='open') DESC, last_member_at DESC LIMIT ?"
         args.append(int(limit))
-        keys = ("incident_id", "status", "title", "description", "projects",
-                "member_count", "opened_at", "last_member_at", "resolved_at",
-                "resolved_by", "resolved_kind", "resolution")
+        keys = ("incident_id", "status", "title", "llm_title", "description",
+                "projects", "member_count", "opened_at", "last_member_at",
+                "resolved_at", "resolved_by", "resolved_kind", "resolution")
         return [dict(zip(keys, r)) for r in self.db.execute(q, args).fetchall()]
 
     def members(self, incident_id):
@@ -147,6 +147,11 @@ class IncidentRepo:
         """Bump activity (a repeat event of an already-grouped issue keeps it open)."""
         self.db.execute("UPDATE incident SET last_member_at=? WHERE incident_id=? AND status='open'",
                         (now or time.time(), incident_id))
+        self.db.commit()
+
+    def set_llm_title(self, incident_id, llm_title):
+        self.db.execute("UPDATE incident SET llm_title=? WHERE incident_id=?",
+                        (llm_title, incident_id))
         self.db.commit()
 
     def set_description(self, incident_id, description, title=None):

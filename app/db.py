@@ -352,7 +352,8 @@ class Database:
             CREATE TABLE IF NOT EXISTS incident (
                 incident_id    INTEGER PRIMARY KEY AUTOINCREMENT,
                 status         TEXT NOT NULL DEFAULT 'open',   -- open | resolved
-                title          TEXT,
+                title          TEXT,                           -- raw lead-issue title
+                llm_title      TEXT,                           -- short LLM-written headline
                 description    TEXT,                           -- LLM root-cause (reuses analysis)
                 lead_issue_id  TEXT,
                 projects       TEXT,                           -- comma-set of affected project names
@@ -368,6 +369,10 @@ class Database:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS ix_incident_status ON incident(status, last_member_at)")
+        try:    # short LLM-written headline (added later)
+            db.execute("ALTER TABLE incident ADD COLUMN llm_title TEXT")
+        except sqlite3.OperationalError:
+            pass
         # one row per issue grouped into an incident (an issue belongs to one incident)
         db.execute(
             "CREATE TABLE IF NOT EXISTS incident_member ("

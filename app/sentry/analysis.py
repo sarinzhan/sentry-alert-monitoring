@@ -10,7 +10,7 @@ the pipeline keeps the cheaper one-shot prompt.
 import re
 import json
 
-from app.config import ENABLE_LLM_TOOLS, GITLAB_REF, log
+from app.config import ENABLE_LLM_TOOLS, GITLAB_REF, INCIDENT_GROUPING_MODEL, log
 from app.services.gitlab_tools import build_gitlab_server
 from app.services.sentry_tools import build_sentry_server, fmt_event_details
 from app.services.knowledge_tools import build_knowledge_server, NOTES_PROMPT
@@ -210,6 +210,32 @@ class AnalysisService:
         if m.get("llm_id"):
             cost += f" · 🔍 <code>/llm {m['llm_id']}</code>"
         return f"{analysis}\n<i>{cost}</i>"
+
+    async def incident_title(self, members, description=None):
+        """A short, human incident headline from the LLM (Russian, a few words),
+        built from the grouped errors + the cause analysis. One-shot, no tools,
+        cheap model. Returns None when the LLM is off or gives nothing."""
+        if not self._llm.enabled:
+            return None
+        titles = "\n".join(f"- {(m.get('title') or '')[:200]}" for m in (members or [])[:10])
+        prompt = (
+            "Сформулируй КОРОТКИЙ заголовок инцидента на русском: одна строка, "
+            "3–7 слов, суть проблемы для пользователя, без кавычек, без кода, "
+            "классов и стектрейса.\n\n"
+            + (f"Разбор причины:\n{description}\n\n" if description else "")
+            + f"Сгруппированные ошибки:\n{titles}\n\n"
+            "Ответь только заголовком."
+        )
+        rec = await self._llm.complete(prompt, model=INCIDENT_GROUPING_MODEL)
+        if self._audit is not None and rec is not None:
+            try:
+                self._audit.put("incident-title", rec)
+            except Exception:
+                pass
+        if rec is None or not rec.text:
+            return None
+        t = rec.text.strip().splitlines()[0].strip().strip('"').strip("«»").strip()
+        return t[:120] or None
 
     async def verify_resolution(self, p):
         """Agentic check that an incident is really resolved, run when someone taps

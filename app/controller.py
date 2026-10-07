@@ -1032,10 +1032,10 @@ async def incidents_list(request: Request):
     except ValueError:
         limit = 200
     items = repo.list(limit=limit, status=status)
-    for it in items:                      # prefer the LLM title from the analysis
-        llm = title_from_analysis(it.pop("description", None))
-        if llm:
-            it["title"] = llm
+    for it in items:                      # prefer the dedicated LLM headline,
+        desc = it.pop("description", None)  # then the analysis-derived title
+        it["title"] = (it.pop("llm_title", None) or title_from_analysis(desc)
+                       or it["title"])
     return {"incidents": items, "group_enabled": GROUP_ENABLED}
 
 

@@ -130,6 +130,9 @@ def build_incident_message(inc, members, analysis=None, events=None, users=None,
     projects = esc(inc.get("projects") or "?")
     head = "⬆️ <b>Инцидент разрастается</b>" if escalation else "🧩 <b>Инцидент</b>"
     lines = [f"{head} <code>#{esc(iid)}</code> · {projects} · {esc(n)} ошибок"]
+    headline = inc.get("llm_title") or title_from_analysis(inc.get("description"))
+    if headline:
+        lines.append(f"<b>{esc(headline)}</b>")
 
     agg = []
     if events is not None:
@@ -164,7 +167,7 @@ def build_incident_resolved(inc, members, now=None) -> str:
     iid = inc.get("incident_id")
     n = inc.get("member_count") or len(members)
     projects = esc(inc.get("projects") or "?")
-    title = esc(title_from_analysis(inc.get("description"))
+    title = esc(inc.get("llm_title") or title_from_analysis(inc.get("description"))
                 or readable_title(inc.get("title")) or "Инцидент")
     by, kind = inc.get("resolved_by"), inc.get("resolved_kind")
     who = f"@{esc(by)}" if by else ("автоматически" if kind == "auto" else "вручную")

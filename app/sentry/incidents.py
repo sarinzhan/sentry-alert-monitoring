@@ -13,8 +13,7 @@ import asyncio
 
 from app.config import (INCIDENT_WINDOW_SEC, INCIDENT_MAX_MEMBERS,
                         INCIDENT_ENVIRONMENTS, log)
-from app.sentry.message import (build_incident_message, build_incident_resolved,
-                                 title_from_analysis)
+from app.sentry.message import build_incident_message, build_incident_resolved
 
 
 def _as_chat_id(chat_id):
@@ -102,10 +101,17 @@ class IncidentService:
             analysis = await get_analysis()
             inc = self._inc.get(incident_id)
             if analysis and not inc.get("description"):
-                # title from the LLM («Что сломалось» line); keep the raw title if absent
-                llm_title = title_from_analysis(analysis) or None
-                self._inc.set_description(incident_id, analysis, title=llm_title)
-                inc = self._inc.get(incident_id)
+                self._inc.set_description(incident_id, analysis)
+            # dedicated short LLM headline for the incident (once, then cached)
+            if self._analysis is not None and not inc.get("llm_title"):
+                try:
+                    title = await self._analysis.incident_title(
+                        self._inc.members(incident_id), analysis)
+                    if title:
+                        self._inc.set_llm_title(incident_id, title)
+                except Exception as e:
+                    log.debug("incident title gen failed inc=%s: %s", incident_id, e)
+            inc = self._inc.get(incident_id)
             members = self._inc.members(incident_id)
             text = build_incident_message(inc, members, analysis, events, users, p.get("url"))
             msg = await self._bot.send(text, chat_id=_as_chat_id(chat_id),
