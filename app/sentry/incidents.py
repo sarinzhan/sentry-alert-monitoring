@@ -12,7 +12,8 @@ import time
 import asyncio
 
 from app.config import INCIDENT_WINDOW_SEC, INCIDENT_MAX_MEMBERS, log
-from app.sentry.message import build_incident_message, build_incident_resolved
+from app.sentry.message import (build_incident_message, build_incident_resolved,
+                                 title_from_analysis)
 
 
 def _as_chat_id(chat_id):
@@ -93,7 +94,9 @@ class IncidentService:
             analysis = await get_analysis()
             inc = self._inc.get(incident_id)
             if analysis and not inc.get("description"):
-                self._inc.set_description(incident_id, analysis)
+                # title from the LLM («Что сломалось» line); keep the raw title if absent
+                llm_title = title_from_analysis(analysis) or None
+                self._inc.set_description(incident_id, analysis, title=llm_title)
                 inc = self._inc.get(incident_id)
             members = self._inc.members(incident_id)
             text = build_incident_message(inc, members, analysis, events, users, p.get("url"))

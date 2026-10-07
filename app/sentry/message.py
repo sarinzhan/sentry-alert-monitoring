@@ -18,6 +18,22 @@ INCIDENT_RELATED_MAX = 10
 _DETAIL = re.compile(r"detail='([^']+)'")
 
 
+def title_from_analysis(analysis: str, limit: int = 120) -> str:
+    """A human incident title taken from the LLM analysis — the «Что сломалось: …»
+    line (user-facing impact). Returns '' when not found (caller keeps its
+    fallback). Plain text; caller escapes."""
+    if not analysis:
+        return ""
+    for line in analysis.splitlines():
+        s = line.strip().lstrip("🤖").strip()
+        if s.lower().startswith("что сломалось"):
+            _, _, rest = s.partition(":")
+            rest = rest.strip()
+            if rest:
+                return rest if len(rest) <= limit else rest[:limit] + "…"
+    return ""
+
+
 def readable_title(t: str, limit: int = 160) -> str:
     """Sentry titles are often a giant exception dump. Pull out the human part —
     the error class + its detail='…' message when present, else the first line,
