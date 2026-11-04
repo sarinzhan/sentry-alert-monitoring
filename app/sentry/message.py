@@ -69,8 +69,11 @@ def build_message(p: dict, analysis: str = None) -> str:
     author = f"{who} · {esc(b.get('date') or '?')}" if who else ""
     short = f"<code>#{esc(p.get('short'))}</code>" if p.get("short") else ""
     lines.append(" · ".join(x for x in (author, counts, short) if x))
-    # affected users — right under the counts line
-    if p.get("user_count"):
+    # affected users over the same windows as the counts line (e.g. "5/3/1 (12h/6h/10m)")
+    unums = "/".join(esc(c) for c in (p.get("user_counts") or []))
+    if unums and any(p.get("user_counts") or []):
+        lines.append(f"👥 затронуто пользователей: {unums} ({labels})")
+    elif p.get("user_count"):
         lines.append(f"👥 затронуто пользователей: {esc(p['user_count'])}")
     # LLM explanation — что сломалось / причина / исправление (on every alert)
     if analysis:

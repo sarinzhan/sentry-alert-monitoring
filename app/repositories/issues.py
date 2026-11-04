@@ -33,6 +33,14 @@ class IssuesRepo:
             "SELECT COUNT(*) FROM event_log WHERE issue_id=? AND ts>=?", (issue_id, now - w)
         ).fetchone()[0] for w in windows]
 
+    def user_counts_for(self, issue_id, windows, now=None):
+        """Distinct affected-user counts for an issue over the given windows (seconds)."""
+        now = now or time.time()
+        return [self.db.execute(
+            "SELECT COUNT(DISTINCT usr) FROM event_log "
+            "WHERE issue_id=? AND ts>=? AND usr IS NOT NULL", (issue_id, now - w)
+        ).fetchone()[0] for w in windows]
+
     def crit_stats(self, issue_id, window_sec, now):
         """(occurrences, distinct affected users) for an issue over the critical window."""
         since = now - window_sec

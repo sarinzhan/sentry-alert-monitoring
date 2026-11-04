@@ -155,6 +155,7 @@ class EventPipeline:
                 pc["status"] = status
                 pc["reason"] = reason
                 pc["counts"] = self.issues.counts_for(p["issue_id"], rules["stat_windows"], now)
+                pc["user_counts"] = self.issues.user_counts_for(p["issue_id"], rules["stat_windows"], now)
                 pc["stat_labels"] = "/".join(fmt_duration(w) for w in rules["stat_windows"])
                 pc["llm_meta"] = p.get("llm_meta")
                 msg = await self._send(
