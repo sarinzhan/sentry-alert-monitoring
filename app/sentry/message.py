@@ -57,6 +57,9 @@ def build_message(p: dict, analysis: str = None) -> str:
 
     # line 1: <emoji> project · env · status
     lines = [f"{emoji} <b>{project}</b> · {env} · {esc(status)}"]
+    # why this alert fired — the triggering threshold / condition
+    if p.get("reason"):
+        lines.append(f"<i>причина: {esc(p['reason'])}</i>")
     # line 2: <@telegram or vcs author> · <commit date-time> · counts (periods) · #<short>
     nums = "/".join(esc(c) for c in (p.get("counts") or []))
     labels = p.get("stat_labels") or STAT_LABELS

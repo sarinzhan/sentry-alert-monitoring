@@ -144,7 +144,7 @@ class EventPipeline:
             for chat_id, thread_id in targets:
                 rules = self.rules.effective(chat_id)
                 async with self._lock:
-                    send, status = self.decider.decide(
+                    send, status, reason = self.decider.decide(
                         chat_id, p["issue_id"], rules, now, forced, project=project_key)
                 if not send:
                     continue
@@ -153,6 +153,7 @@ class EventPipeline:
                 # per-chat view: counts over this chat's stat windows + matching labels
                 pc = dict(p)
                 pc["status"] = status
+                pc["reason"] = reason
                 pc["counts"] = self.issues.counts_for(p["issue_id"], rules["stat_windows"], now)
                 pc["stat_labels"] = "/".join(fmt_duration(w) for w in rules["stat_windows"])
                 pc["llm_meta"] = p.get("llm_meta")
@@ -165,8 +166,8 @@ class EventPipeline:
                     self.issues.cache_url_project(p["issue_id"], p.get("url"), p.get("project"))
                     self.issues.mark_sent(p["issue_id"], now, critical=(status == "escalating"))
                     sent += 1
-                    log.info("sent issue=%s chat=%s status=%s counts=%s%s",
-                             p["issue_id"], chat_id, status, pc["counts"],
+                    log.info("sent issue=%s chat=%s status=%s reason=%r counts=%s%s",
+                             p["issue_id"], chat_id, status, reason, pc["counts"],
                              " FORCED" if forced else "")
             if not sent:
                 log.info("skip issue=%s no chat triggered (targets=%d)",
